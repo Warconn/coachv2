@@ -13,7 +13,7 @@ CoachV2 is a work-in-progress platform for monitoring moneyline movements across
    ```bash
    docker-compose up --build
    ```
-3. Access the web UI at `http://localhost:5000` (includes one-click ingestion and live recommendations table).
+3. Access the web UI at `http://localhost:5000` (includes filtering, sorting, and one-click ingestion).
 
 ### Python 3.14 note
 The `psycopg2-binary` package does not yet ship wheels for Python 3.14. If you are running Python 3.14 locally, replace the dependency and use the new driver instead:
@@ -26,6 +26,12 @@ Update `requirements.txt` so future installs use `psycopg[binary]`, and set `DAT
 ### Reverse line movement API
 - `GET /api/recommendations?limit=50` – returns the most recent reverse line movement alerts persisted by the ingestion worker.
 - `POST /api/ingest` – runs an on-demand ingestion cycle (also wired to the dashboard button).
+
+### Dashboard tips
+- Use the League, Sportsbook, and Confidence dropdowns to narrow the table to the alerts you care about most.
+- Click any sortable column header (Triggered, Signal, Confidence, etc.) to toggle ascending/descending order.
+- Hover the info icon in the "When should I bet?" panel for reminders on how to interpret the reverse-move signal and what factors to double-check before betting.
+- The **Run Ingestion** button triggers the same ingestion worker immediately, giving you up-to-the-minute lines outside the scheduled cadence.
 
 ## Project Status
 - [x] Repository scaffolding

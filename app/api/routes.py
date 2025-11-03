@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from flask import current_app, jsonify, request
 
-from app.models import Recommendation
+from app.models import Event, Recommendation
 from app.worker.tasks import run_ingest_cycle
 
 from . import api_bp
@@ -32,8 +34,14 @@ def recommendations_index():
         limit = 50
     limit = max(1, min(limit, 200))
 
+    now = datetime.now(timezone.utc)
+
     recommendations = (
-        Recommendation.query.order_by(Recommendation.triggered_at.desc())
+        Recommendation.query.join(Event)
+        .filter(
+            (Event.commence_time.is_(None)) | (Event.commence_time >= now)
+        )
+        .order_by(Recommendation.triggered_at.desc())
         .limit(limit)
         .all()
     )
@@ -67,8 +75,7 @@ def recommendations_index():
                 },
                 "bet_side": rec.bet_side,
                 "team": team,
-                "movement_cents": rec.movement_cents,
-                "edge": str(rec.edge) if rec.edge is not None else None,
+                "movement": rec.direction.value,
                 "confidence": rec.confidence,
                 "status": rec.status.value if rec.status else None,
                 "details": rec.details or {},

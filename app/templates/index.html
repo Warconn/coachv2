@@ -12,15 +12,45 @@
         <h1>CoachV2</h1>
         <p class="subtitle">Reverse moneyline movement monitor</p>
       </div>
-      <div class="actions">
-        <label for="limit-select">Show</label>
-        <select id="limit-select">
-          <option value="25">25</option>
-          <option value="50" selected>50</option>
-          <option value="100">100</option>
-        </select>
+      <div class="actions" role="region" aria-label="Dashboard controls">
+        <div class="control-group">
+          <label for="limit-select">Show</label>
+          <select id="limit-select">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label for="league-select">League</label>
+          <select id="league-select">
+            <option value="all" selected>All</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label for="book-select">Sportsbook</label>
+          <select id="book-select">
+            <option value="all" selected>All</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label for="confidence-select">Confidence</label>
+          <select id="confidence-select">
+            <option value="all" selected>All</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </div>
         <button id="refresh-btn" type="button">Refresh</button>
-        <button id="ingest-btn" type="button" class="primary">Run Ingestion</button>
+        <button
+          id="ingest-btn"
+          type="button"
+          class="primary"
+          title="Triggers an immediate odds pull from configured books. Use when you want the latest lines outside the twice-daily schedule."
+        >
+          Run Ingestion
+        </button>
       </div>
     </header>
 
@@ -29,18 +59,33 @@
         <span id="status-message">Loading recommendations…</span>
       </section>
 
+      <section class="explain-panel">
+        <div class="panel-title">
+          When should I bet?
+          <span class="info-icon" data-tooltip="CoachV2 flags reverse line moves where the underdog price tightens past your threshold.">i</span>
+        </div>
+        <ul>
+          <li>Consider wagering when the reverse-move signal aligns with your handicap and you can still grab the tightened price before the market fully adjusts.</li>
+          <li>Check multiple books — sharper books (e.g., Pinnacle, Circa) moving with the alert add confidence even if they are not listed here yet.</li>
+          <li>Pass on alerts when key injuries, weather, or rest disadvantages contradict the move. Use the matchup tooltip for start times.</li>
+          <li>High confidence indicates at least 2× the configured cent move; Medium is ≥1.5×. Use confidence to filter to your desired risk level.</li>
+        </ul>
+        <p class="ingest-note">
+          <strong>Run Ingestion</strong> pulls fresh odds immediately. It’s helpful before placing bets or if you suspect the market has moved since the last scheduled sweep.
+        </p>
+      </section>
+
       <section class="table-container">
         <table id="recommendations-table">
           <thead>
             <tr>
-              <th>Triggered</th>
-              <th>League</th>
-              <th>Matchup</th>
-              <th>Sportsbook</th>
-              <th>Side</th>
-              <th>Movement</th>
-              <th>Edge</th>
-              <th>Confidence</th>
+              <th scope="col" data-sort="triggered_at">Triggered <span class="sort-indicator"></span></th>
+              <th scope="col" data-sort="league">League <span class="sort-indicator"></span></th>
+              <th scope="col">Matchup</th>
+              <th scope="col" data-sort="sportsbook">Sportsbook <span class="sort-indicator"></span></th>
+              <th scope="col" data-sort="bet_side">Recommendation <span class="sort-indicator"></span></th>
+              <th scope="col" data-sort="movement">Odds Move <span class="sort-indicator"></span></th>
+              <th scope="col" data-sort="confidence">Confidence <span class="sort-indicator"></span></th>
             </tr>
           </thead>
           <tbody id="recommendations-body"></tbody>
@@ -56,7 +101,6 @@
         <td class="sportsbook"></td>
         <td class="side"></td>
         <td class="movement"></td>
-        <td class="edge"></td>
         <td class="confidence"></td>
       </tr>
     </template>
@@ -66,9 +110,30 @@
       const tableBody = document.getElementById('recommendations-body');
       const statusMessage = document.getElementById('status-message');
       const limitSelect = document.getElementById('limit-select');
+      const leagueSelect = document.getElementById('league-select');
+      const bookSelect = document.getElementById('book-select');
+      const confidenceSelect = document.getElementById('confidence-select');
       const refreshBtn = document.getElementById('refresh-btn');
       const ingestBtn = document.getElementById('ingest-btn');
       const rowTemplate = document.getElementById('row-template');
+      const headerCells = document.querySelectorAll('th[data-sort]');
+
+      const state = {
+        data: [],
+        filters: {
+          league: 'all',
+          sportsbook: 'all',
+          confidence: 'all',
+        },
+        sort: {
+          key: 'triggered_at',
+          direction: 'desc',
+        },
+        lastRefreshed: null,
+      };
+
+      const confidenceOrder = { high: 3, medium: 2, low: 1 };
+      const movementPriority = { reverse: 2, favorite: 1, unchanged: 0 };
 
       async function fetchRecommendations(limit) {
         statusMessage.textContent = 'Loading recommendations…';
@@ -79,25 +144,134 @@
             throw new Error(`API error ${response.status}`);
           }
           const data = await response.json();
-          renderRecommendations(data);
-          const timestamp = new Date().toLocaleTimeString();
-          statusMessage.textContent = `Showing ${data.length} recommendations · Last refreshed ${timestamp}`;
+          state.data = data;
+          state.lastRefreshed = new Date();
+          populateFilterOptions(data);
+          applyFiltersAndRender();
         } catch (err) {
           console.error(err);
           statusMessage.textContent = 'Failed to load recommendations. Check logs and try again.';
         }
       }
 
+      function populateFilterOptions(data) {
+        const leagueValues = new Set(['all']);
+        const bookValues = new Set(['all']);
+        const confidenceValues = new Set(['all', 'high', 'medium', 'low']);
+
+        for (const rec of data) {
+          if (rec.event?.league) {
+            leagueValues.add(rec.event.league);
+          } else if (rec.event?.sport_key) {
+            leagueValues.add(rec.event.sport_key);
+          }
+          if (rec.sportsbook_name || rec.sportsbook) {
+            bookValues.add(rec.sportsbook_name || rec.sportsbook);
+          }
+          if (rec.confidence) {
+            confidenceValues.add(rec.confidence.toLowerCase());
+          }
+        }
+
+        updateSelectOptions(leagueSelect, leagueValues, state.filters.league);
+        updateSelectOptions(bookSelect, bookValues, state.filters.sportsbook);
+        updateSelectOptions(confidenceSelect, confidenceValues, state.filters.confidence, true);
+
+        state.filters.league = leagueSelect.value;
+        state.filters.sportsbook = bookSelect.value;
+        state.filters.confidence = confidenceSelect.value.toLowerCase();
+      }
+
+      function updateSelectOptions(selectEl, values, currentValue, enforceOrder = false) {
+        const options = Array.from(values);
+        if (enforceOrder) {
+          const order = ['all', 'high', 'medium', 'low'];
+          options.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+        } else {
+          options.sort((a, b) => a.localeCompare(b));
+        }
+        selectEl.innerHTML = '';
+        for (const value of options) {
+          const opt = document.createElement('option');
+          opt.value = value;
+          const label = value === 'all' ? 'All' : (enforceOrder ? capitalize(value) : value);
+          opt.textContent = label;
+          if (value === currentValue) {
+            opt.selected = true;
+          }
+          selectEl.appendChild(opt);
+        }
+      }
+
+      function applyFiltersAndRender() {
+        const filtered = state.data.filter((rec) => {
+          const matchesLeague =
+            state.filters.league === 'all' ||
+            (rec.event?.league && rec.event.league === state.filters.league) ||
+            (rec.event?.sport_key && rec.event.sport_key === state.filters.league);
+
+          const matchesBook =
+            state.filters.sportsbook === 'all' ||
+            rec.sportsbook_name === state.filters.sportsbook ||
+            rec.sportsbook === state.filters.sportsbook;
+
+          const matchesConfidence =
+            state.filters.confidence === 'all' ||
+            (rec.confidence && rec.confidence.toLowerCase() === state.filters.confidence);
+
+          return matchesLeague && matchesBook && matchesConfidence;
+        });
+
+        const sorted = sortRecommendations(filtered, state.sort);
+        renderRecommendations(sorted);
+        updateSortIndicators();
+        updateStatusSummary(sorted.length);
+      }
+
+      function sortRecommendations(recommendations, sort) {
+        const { key, direction } = sort;
+        const multiplier = direction === 'asc' ? 1 : -1;
+
+        return recommendations.slice().sort((a, b) => {
+          const valA = getSortValue(a, key);
+          const valB = getSortValue(b, key);
+
+          if (valA < valB) return -1 * multiplier;
+          if (valA > valB) return 1 * multiplier;
+          return 0;
+        });
+      }
+
+      function getSortValue(rec, key) {
+        switch (key) {
+          case 'triggered_at':
+            return rec.triggered_at ? new Date(rec.triggered_at).getTime() : 0;
+          case 'league':
+            return rec.event?.league || rec.event?.sport_key || '';
+          case 'sportsbook':
+            return (rec.sportsbook_name || rec.sportsbook || '').toLowerCase();
+          case 'bet_side':
+            return rec.team ? rec.team.toLowerCase() : rec.bet_side || '';
+          case 'movement':
+            return rec.movement ? movementPriority[rec.movement] || 0 : 0;
+          case 'confidence':
+            return rec.confidence ? confidenceOrder[rec.confidence] || 0 : 0;
+          default:
+            return 0;
+        }
+      }
+
       function renderRecommendations(recommendations) {
+        tableBody.innerHTML = '';
+
         if (!recommendations.length) {
           const emptyRow = rowTemplate.content.cloneNode(true);
           emptyRow.querySelector('.triggered').textContent = '—';
           emptyRow.querySelector('.league').textContent = '—';
-          emptyRow.querySelector('.matchup').textContent = 'No recommendations yet';
+          emptyRow.querySelector('.matchup').textContent = 'No recommendations match your filters yet.';
           emptyRow.querySelector('.sportsbook').textContent = '—';
           emptyRow.querySelector('.side').textContent = '—';
           emptyRow.querySelector('.movement').textContent = '—';
-          emptyRow.querySelector('.edge').textContent = '—';
           emptyRow.querySelector('.confidence').textContent = '—';
           tableBody.appendChild(emptyRow);
           return;
@@ -106,15 +280,26 @@
         for (const rec of recommendations) {
           const row = rowTemplate.content.cloneNode(true);
           row.querySelector('.triggered').textContent = formatDate(rec.triggered_at);
-          row.querySelector('.league').textContent = rec.event && rec.event.league ? rec.event.league : rec.event?.sport_key || '—';
+          row.querySelector('.league').textContent = rec.event?.league || rec.event?.sport_key || '—';
           row.querySelector('.matchup').innerHTML = formatMatchup(rec);
           row.querySelector('.sportsbook').textContent = rec.sportsbook_name || rec.sportsbook || '—';
-          row.querySelector('.side').textContent = rec.team ? `${rec.team} (${rec.bet_side})` : rec.bet_side;
-          row.querySelector('.movement').textContent = `${rec.movement_cents}¢`;
-          row.querySelector('.edge').textContent = rec.edge ? `${(parseFloat(rec.edge) * 100).toFixed(2)}%` : '—';
+          row.querySelector('.side').innerHTML = formatRecommendation(rec);
+          row.querySelector('.movement').textContent = formatMovement(rec);
           row.querySelector('.confidence').textContent = rec.confidence || '—';
           tableBody.appendChild(row);
         }
+      }
+
+      function updateSortIndicators() {
+        headerCells.forEach((cell) => {
+          const indicator = cell.querySelector('.sort-indicator');
+          indicator.textContent = '';
+          const key = cell.dataset.sort;
+          if (!key) return;
+          if (state.sort.key === key) {
+            indicator.textContent = state.sort.direction === 'asc' ? '▲' : '▼';
+          }
+        });
       }
 
       function formatMatchup(rec) {
@@ -133,6 +318,57 @@
         return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
       }
 
+      function capitalize(word) {
+        if (!word) return word;
+        return word.charAt(0).toUpperCase() + word.slice(1);
+      }
+
+      function formatAmericanOdds(value) {
+        if (value === null || value === undefined) {
+          return 'N/A';
+        }
+        const num = Number(value);
+        if (Number.isNaN(num)) {
+          return String(value);
+        }
+        return num > 0 ? `+${num}` : `${num}`;
+      }
+
+      function formatRecommendation(rec) {
+        const team = rec.team || capitalize(rec.bet_side) || 'Unknown side';
+        const currentPrice = rec.details?.current_price;
+        const odds = formatAmericanOdds(currentPrice);
+
+        const descriptors = [];
+        if (rec.movement === 'reverse') descriptors.push('reverse signal');
+        if (rec.bet_side === 'home' || rec.bet_side === 'away') {
+          descriptors.push(`${rec.bet_side} side`);
+        }
+
+        const suffix = descriptors.length
+          ? `<span class="muted-inline"> (${descriptors.join(', ')})</span>`
+          : '';
+
+        return `Bet ${team} ML @ ${odds}${suffix}`;
+      }
+
+      function formatMovement(rec) {
+        const prev = rec.details?.previous_price;
+        const curr = rec.details?.current_price;
+        if (prev === undefined || prev === null || curr === undefined || curr === null) {
+          return rec.movement ? capitalize(rec.movement) : '—';
+        }
+        return `${formatAmericanOdds(prev)} → ${formatAmericanOdds(curr)}`;
+      }
+
+      function updateStatusSummary(filteredCount) {
+        const total = state.data.length;
+        const refreshed = state.lastRefreshed
+          ? state.lastRefreshed.toLocaleTimeString()
+          : '—';
+        statusMessage.textContent = `Showing ${filteredCount} of ${total} recommendations · Last refreshed ${refreshed}`;
+      }
+
       async function runIngestion() {
         ingestBtn.disabled = true;
         ingestBtn.textContent = 'Running…';
@@ -142,7 +378,6 @@
             throw new Error(`Failed to trigger ingestion (${response.status})`);
           }
           await fetchRecommendations(limitSelect.value);
-          statusMessage.textContent = 'Ingestion complete. Recommendations refreshed.';
         } catch (err) {
           console.error(err);
           statusMessage.textContent = 'Ingestion failed. Check logs and retry.';
@@ -155,6 +390,32 @@
       refreshBtn.addEventListener('click', () => fetchRecommendations(limitSelect.value));
       ingestBtn.addEventListener('click', runIngestion);
       limitSelect.addEventListener('change', () => fetchRecommendations(limitSelect.value));
+      leagueSelect.addEventListener('change', (event) => {
+        state.filters.league = event.target.value;
+        applyFiltersAndRender();
+      });
+      bookSelect.addEventListener('change', (event) => {
+        state.filters.sportsbook = event.target.value;
+        applyFiltersAndRender();
+      });
+      confidenceSelect.addEventListener('change', (event) => {
+        state.filters.confidence = event.target.value.toLowerCase();
+        applyFiltersAndRender();
+      });
+
+      headerCells.forEach((cell) => {
+        cell.addEventListener('click', () => {
+          const key = cell.dataset.sort;
+          if (!key) return;
+          if (state.sort.key === key) {
+            state.sort.direction = state.sort.direction === 'asc' ? 'desc' : 'asc';
+          } else {
+            state.sort.key = key;
+            state.sort.direction = key === 'triggered_at' ? 'desc' : 'asc';
+          }
+          applyFiltersAndRender();
+        });
+      });
 
       fetchRecommendations(limitSelect.value);
     </script>
