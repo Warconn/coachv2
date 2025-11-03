@@ -1,0 +1,4 @@
+This directory contains the Alembic migration scripts for CoachV2.
+
+Run `flask db migrate` to generate a new migration and `flask db upgrade` to apply it.
+
