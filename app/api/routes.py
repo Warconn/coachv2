@@ -70,62 +70,76 @@ def recommendations_index():
     unit_value_float = float(unit_value)
 
     for rec in recommendations:
-        event = rec.event
-        sportsbook = rec.sportsbook
-        team = None
-        if event:
-            if rec.bet_side == "home":
-                team = event.home_team
-            elif rec.bet_side == "away":
-                team = event.away_team
+        try:
+            event = rec.event
+            sportsbook = rec.sportsbook
+            team = None
+            if event:
+                if rec.bet_side == "home":
+                    team = event.home_team
+                elif rec.bet_side == "away":
+                    team = event.away_team
 
-        bets_payload = [
-            {
-                "id": bet.id,
-                "stake_units": float(bet.stake) if bet.stake is not None else None,
-                "stake_amount": float(bet.stake * unit_value) if bet.stake is not None else None,
-                "price": bet.price,
-                "result": bet.result.value if bet.result else None,
-                "placed_at": bet.placed_at.isoformat() if bet.placed_at else None,
-                "notes": bet.notes,
-            }
-            for bet in rec.bets
-        ]
+            bets_payload = [
+                {
+                    "id": bet.id,
+                    "stake_units": float(bet.stake) if bet.stake is not None else None,
+                    "stake_amount": float(bet.stake * unit_value) if bet.stake is not None else None,
+                    "price": bet.price,
+                    "result": bet.result.value if bet.result else None,
+                    "placed_at": bet.placed_at.isoformat() if bet.placed_at else None,
+                    "notes": bet.notes,
+                }
+                for bet in rec.bets
+            ]
 
-        payload.append(
-            {
-                "id": rec.id,
-                "triggered_at": rec.triggered_at.isoformat() if rec.triggered_at else None,
-                "sportsbook": sportsbook.key if sportsbook else None,
-                "sportsbook_name": sportsbook.name if sportsbook else None,
-                "event": {
-                    "id": event.id if event else None,
-                    "sport_key": event.sport_key if event else None,
-                    "commence_time": event.commence_time.isoformat()
-                    if event and event.commence_time
-                    else None,
-                    "home_team": event.home_team if event else None,
-                    "away_team": event.away_team if event else None,
-                    "league": event.league if event else None,
-                    "home_score": event.home_score if event else None,
-                    "away_score": event.away_score if event else None,
-                    "resolved_at": event.resolved_at.isoformat() if event and event.resolved_at else None,
-                },
-                "bet_side": rec.bet_side,
-                "team": team,
-                "movement": rec.direction.value,
-                "confidence": rec.confidence,
-                "status": rec.status.value if rec.status else None,
-                "details": rec.details or {},
-                "bet_logged": bool(bets_payload),
-                "bet_count": len(bets_payload),
-                "bets": bets_payload,
-                "unit_value": unit_value_float,
-                "outcome": rec.resolved_result.value if rec.resolved_result else None,
-                "resolved_at": rec.resolved_at.isoformat() if rec.resolved_at else None,
-                "closing_price": rec.closing_price,
-            }
-        )
+            payload.append(
+                {
+                    "id": rec.id,
+                    "triggered_at": rec.triggered_at.isoformat() if rec.triggered_at else None,
+                    "sportsbook": sportsbook.key if sportsbook else None,
+                    "sportsbook_name": sportsbook.name if sportsbook else None,
+                    "event": {
+                        "id": event.id if event else None,
+                        "sport_key": event.sport_key if event else None,
+                        "commence_time": event.commence_time.isoformat()
+                        if event and event.commence_time
+                        else None,
+                        "home_team": event.home_team if event else None,
+                        "away_team": event.away_team if event else None,
+                        "league": event.league if event else None,
+                        "home_score": event.home_score if event else None,
+                        "away_score": event.away_score if event else None,
+                        "resolved_at": event.resolved_at.isoformat() if event and event.resolved_at else None,
+                    },
+                    "bet_side": rec.bet_side,
+                    "team": team,
+                    "movement": rec.direction.value,
+                    "confidence": rec.confidence,
+                    "status": rec.status.value if rec.status else None,
+                    "details": rec.details or {},
+                    "bet_logged": bool(bets_payload),
+                    "bet_count": len(bets_payload),
+                    "bets": bets_payload,
+                    "unit_value": unit_value_float,
+                    "outcome": rec.resolved_result.value if rec.resolved_result else None,
+                    "resolved_at": rec.resolved_at.isoformat() if rec.resolved_at else None,
+                    "closing_price": rec.closing_price,
+                }
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            # Log the exception with the recommendation id to aid debugging and return a helpful error.
+            current_app.logger.exception("Failed to build recommendation payload for id=%s: %s", getattr(rec, 'id', None), exc)
+            return (
+                jsonify(
+                    {
+                        "error": "Failed to build recommendations payload",
+                        "recommendation_id": getattr(rec, "id", None),
+                        "message": str(exc),
+                    }
+                ),
+                500,
+            )
 
     return jsonify(payload)
 
@@ -251,3 +265,91 @@ def resolve_recommendation(rec_id: int):
     )
 
     return jsonify({"status": "resolved", "outcome": outcome.value})
+
+
+@api_bp.post("/recommendations/bulk_resolve")
+def bulk_resolve_recommendations():
+    payload = request.get_json() or {}
+    items = payload.get("items", [])
+    if not isinstance(items, list) or not items:
+        return jsonify({"error": "items must be a non-empty list"}), 400
+
+    now = datetime.now(timezone.utc)
+    updated = 0
+
+    for entry in items:
+        rec_id = entry.get("id")
+        event_id = entry.get("event_id")
+
+        recommendation = Recommendation.query.get(rec_id) if rec_id else None
+        event = recommendation.event if recommendation else None
+
+        if not event and event_id:
+            event = Event.query.get(event_id)
+
+        if not recommendation and event and event.recommendations:
+            recommendation = event.recommendations[0]
+
+        if not recommendation:
+            continue
+
+        outcome_raw = entry.get("outcome")
+        if not outcome_raw:
+            continue
+
+        try:
+            outcome = BetResult(outcome_raw.lower())
+        except ValueError:
+            continue
+
+        closing_price_val = None
+        closing_price_raw = entry.get("closing_price")
+        if closing_price_raw not in (None, "", []):
+            try:
+                closing_price_val = int(closing_price_raw)
+            except (TypeError, ValueError):
+                continue
+
+        def _optional_int(value):
+            if value in (None, "", []):
+                return None
+            return int(value)
+
+        try:
+            home_score_val = _optional_int(entry.get("home_score"))
+            away_score_val = _optional_int(entry.get("away_score"))
+        except (TypeError, ValueError):
+            continue
+
+        target_event = event or recommendation.event
+        if not target_event:
+            continue
+
+        target_recommendations = (
+            Recommendation.query.filter_by(event_id=target_event.id).all()
+            if target_event.id
+            else [recommendation]
+        )
+
+        for rec in target_recommendations:
+            rec.resolved_result = outcome
+            rec.resolved_at = now
+            rec.closing_price = closing_price_val
+            if outcome != BetResult.PENDING:
+                rec.status = RecommendationStatus.SETTLED
+
+            for bet in rec.bets:
+                bet.result = outcome
+                if bet.settled_at is None:
+                    bet.settled_at = now
+
+        target_event.home_score = home_score_val
+        target_event.away_score = away_score_val
+        target_event.resolved_at = now
+
+        updated += len(target_recommendations)
+
+    if updated:
+        db.session.commit()
+
+    return jsonify({"status": "ok", "updated": updated})

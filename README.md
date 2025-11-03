@@ -38,6 +38,7 @@ Update `requirements.txt` so future installs use `psycopg[binary]`, and set `DAT
 - Rows highlighted in gold indicate that multiple sportsbooks showed the same reverse move for that matchup.
 - Use the **Log Bet** button to capture stakes and odds so you can analyse performance later.
 - Switch to the **History** tab to review resolved recommendations, logged units, and recorded outcomes.
+- Use **Update Outcomes** on the History tab to batch enter results (final score, outcome, closing price) for all unresolved games at once.
 - Hover the info icon in the "When should I bet?" panel for reminders on how to interpret the reverse-move signal and what factors to double-check before betting.
 - The **Run Ingestion** button triggers the same ingestion worker immediately, giving you up-to-the-minute lines outside the scheduled cadence.
 

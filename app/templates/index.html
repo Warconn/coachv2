@@ -62,6 +62,9 @@
         <button type="button" class="tab-btn" data-view="history" role="tab" aria-selected="false">
           History
         </button>
+        <button type="button" id="update-outcomes-btn" class="secondary-btn" hidden>
+          Update Outcomes
+        </button>
       </div>
 
       <section class="status-bar" id="status-bar">
@@ -121,6 +124,36 @@
       </tr>
     </template>
 
+    <div id="outcome-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="outcome-modal-title">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="outcome-modal-title">Update Outcomes</h2>
+          <button type="button" id="outcome-modal-close" class="modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-help">Fill in results for each matchup. Outcomes apply to every sportsbook recommendation for the game.</p>
+          <div class="modal-table-wrapper">
+            <table id="outcome-table">
+              <thead>
+                <tr>
+                  <th>Matchup</th>
+                  <th>Outcome</th>
+                  <th>Home Score</th>
+                  <th>Away Score</th>
+                  <th>Closing ML</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" id="submit-outcomes" class="primary">Save Outcomes</button>
+          <button type="button" id="cancel-outcomes">Cancel</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       const API_BASE = '/api';
       const displayTimezone = document.body.dataset.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -138,6 +171,12 @@
       tabButtons.forEach((button) => {
         button.setAttribute('aria-selected', button.classList.contains('active'));
       });
+      const updateOutcomesBtn = document.getElementById('update-outcomes-btn');
+      const outcomeModal = document.getElementById('outcome-modal');
+      const outcomeTableBody = document.querySelector('#outcome-table tbody');
+      const modalCloseBtn = document.getElementById('outcome-modal-close');
+      const submitOutcomesBtn = document.getElementById('submit-outcomes');
+      const cancelOutcomesBtn = document.getElementById('cancel-outcomes');
       let unitValue = parseFloat(document.body.dataset.unitValue || '1');
 
       const state = {
@@ -177,6 +216,7 @@
           state.lastRefreshed = new Date();
           populateFilterOptions(data);
           applyFiltersAndRender();
+          toggleOutcomeButton();
         } catch (err) {
           console.error(err);
           statusMessage.textContent = 'Failed to load recommendations. Check logs and try again.';
@@ -703,7 +743,149 @@
           btn.setAttribute('aria-selected', isActive);
         });
         state.sort = { key: 'triggered_at', direction: 'desc' };
+        toggleOutcomeButton();
         fetchRecommendations();
+      }
+
+      function toggleOutcomeButton() {
+        if (state.view === 'history') {
+          updateOutcomesBtn.hidden = false;
+        } else {
+          updateOutcomesBtn.hidden = true;
+        }
+      }
+
+      updateOutcomesBtn.addEventListener('click', openOutcomeModal);
+      modalCloseBtn.addEventListener('click', closeOutcomeModal);
+      cancelOutcomesBtn.addEventListener('click', closeOutcomeModal);
+      submitOutcomesBtn.addEventListener('click', submitOutcomeUpdates);
+
+      function openOutcomeModal() {
+        const unresolved = state.data.filter((rec) => !rec.outcome);
+        if (!unresolved.length) {
+          alert('All visible recommendations already have outcomes.');
+          return;
+        }
+
+        outcomeTableBody.innerHTML = '';
+        const seen = new Set();
+
+        unresolved.forEach((rec) => {
+          const eventId = rec.event?.id || rec.id;
+          if (seen.has(eventId)) return;
+          seen.add(eventId);
+
+          const row = document.createElement('tr');
+          row.dataset.recId = rec.id;
+          if (rec.event?.id) {
+            row.dataset.eventId = rec.event.id;
+          }
+
+          const matchupCell = document.createElement('td');
+          matchupCell.innerHTML = formatMatchup(rec);
+          row.appendChild(matchupCell);
+
+          const outcomeCell = document.createElement('td');
+          const outcomeSelect = document.createElement('select');
+          ['', 'won', 'lost', 'push', 'void'].forEach((value) => {
+            const opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = value ? capitalize(value) : 'Select';
+            outcomeSelect.appendChild(opt);
+          });
+          outcomeCell.appendChild(outcomeSelect);
+          row.appendChild(outcomeCell);
+
+          const homeCell = document.createElement('td');
+          const homeInput = document.createElement('input');
+          homeInput.type = 'number';
+          homeInput.min = '0';
+          homeInput.placeholder = 'Home';
+          homeInput.value = rec.event?.home_score ?? '';
+          homeCell.appendChild(homeInput);
+          row.appendChild(homeCell);
+
+          const awayCell = document.createElement('td');
+          const awayInput = document.createElement('input');
+          awayInput.type = 'number';
+          awayInput.min = '0';
+          awayInput.placeholder = 'Away';
+          awayInput.value = rec.event?.away_score ?? '';
+          awayCell.appendChild(awayInput);
+          row.appendChild(awayCell);
+
+          const closingCell = document.createElement('td');
+          const closingInput = document.createElement('input');
+          closingInput.type = 'number';
+          closingInput.placeholder = 'ML';
+          closingInput.value = rec.closing_price ?? rec.details?.current_price ?? '';
+          closingCell.appendChild(closingInput);
+          row.appendChild(closingCell);
+
+          outcomeTableBody.appendChild(row);
+        });
+
+        outcomeModal.classList.remove('hidden');
+      }
+
+      function closeOutcomeModal() {
+        outcomeModal.classList.add('hidden');
+      }
+
+      async function submitOutcomeUpdates() {
+        const rows = Array.from(outcomeTableBody.querySelectorAll('tr'));
+        if (!rows.length) {
+          closeOutcomeModal();
+          return;
+        }
+
+        const items = [];
+        for (const row of rows) {
+          const recId = Number(row.dataset.recId);
+          const outcome = row.querySelector('select').value;
+          const inputs = row.querySelectorAll('input');
+          const [homeInput, awayInput, closingInput] = inputs;
+
+          if (!outcome) {
+            alert('Please select an outcome for every matchup.');
+            return;
+          }
+
+          items.push({
+            id: recId,
+            event_id: row.dataset.eventId ? Number(row.dataset.eventId) : null,
+            outcome,
+            home_score: homeInput.value || null,
+            away_score: awayInput.value || null,
+            closing_price: closingInput.value || null,
+          });
+        }
+
+        try {
+          submitOutcomesBtn.disabled = true;
+          submitOutcomesBtn.textContent = 'Saving…';
+
+          const response = await fetch(`${API_BASE}/recommendations/bulk_resolve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items }),
+          });
+
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.error || `Request failed (${response.status})`);
+          }
+
+          closeOutcomeModal();
+          statusMessage.textContent = 'Outcomes updated successfully.';
+          await fetchRecommendations();
+        } catch (err) {
+          console.error(err);
+          alert(err.message || 'Failed to update outcomes.');
+        } finally {
+          submitOutcomesBtn.disabled = false;
+          submitOutcomesBtn.textContent = 'Save Outcomes';
+        }
       }
 
       fetchRecommendations();

@@ -15,9 +15,64 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
+from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import relationship
 
 from .. import db
+
+
+class EnumFlexible(TypeDecorator):
+    """A SQLAlchemy TypeDecorator that stores enum values as strings but
+    accepts either enum.value or enum.name from the database when loading.
+
+    This handles mixed databases where some rows were written using enum
+    names and others using enum values.
+    """
+
+    impl = String
+
+    def __init__(self, enum_class, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.enum_class = enum_class
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        # If an enum member is passed, store its value; otherwise store the raw
+        # string (assume it's already a correct value)
+        if isinstance(value, self.enum_class):
+            return value.value
+        return str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        # If already an enum member, return
+        try:
+            # e.g., if SQLAlchemy already converted, just return
+            if isinstance(value, self.enum_class):
+                return value
+        except Exception:
+            pass
+
+        # Try matching by value first
+        for member in self.enum_class:
+            if member.value == value:
+                return member
+
+        # Next, try matching by name (case-insensitive)
+        try:
+            return self.enum_class[value]
+        except Exception:
+            pass
+        try:
+            return self.enum_class[value.upper()]
+        except Exception:
+            pass
+
+        # As a last resort, return the raw string
+        return value
+
 
 
 class BaseModel(db.Model):
@@ -128,17 +183,27 @@ class Recommendation(BaseModel):
     sportsbook_id = Column(Integer, ForeignKey("sportsbooks.id"), nullable=False)
     snapshot_id = Column(Integer, ForeignKey("odds_snapshots.id"), nullable=True)
     triggered_at = Column(DateTime(timezone=True), nullable=False)
-    direction = Column(Enum(MovementDirection), nullable=False)
+    direction = Column(
+        EnumFlexible(MovementDirection),
+        nullable=False,
+    )
     movement_cents = Column(Integer, nullable=False)
     edge = Column(Numeric(scale=4, precision=8), nullable=True)
     confidence = Column(String(32), nullable=True)
     bet_side = Column(String(64), nullable=False)
     stake_units = Column(Numeric(scale=4, precision=8), nullable=True)
-    status = Column(Enum(RecommendationStatus), default=RecommendationStatus.PENDING, nullable=False)
+    status = Column(
+        EnumFlexible(RecommendationStatus),
+        default=RecommendationStatus.PENDING,
+        nullable=False,
+    )
     notes = Column(String(512), nullable=True)
     details = Column(JSON, nullable=True)
     closing_price = Column(Integer, nullable=True)
-    resolved_result = Column(Enum(BetResult), nullable=True)
+    resolved_result = Column(
+        EnumFlexible(BetResult),
+        nullable=True,
+    )
     resolved_at = Column(DateTime(timezone=True), nullable=True)
 
     event = relationship("Event", back_populates="recommendations")
@@ -156,7 +221,11 @@ class Bet(BaseModel):
     placed_at = Column(DateTime(timezone=True), nullable=False)
     stake = Column(Numeric(scale=4, precision=12), nullable=False)
     price = Column(Integer, nullable=False)
-    result = Column(Enum(BetResult), default=BetResult.PENDING, nullable=False)
+    result = Column(
+        EnumFlexible(BetResult),
+        default=BetResult.PENDING,
+        nullable=False,
+    )
     payout = Column(Numeric(scale=4, precision=12), nullable=True)
     settled_at = Column(DateTime(timezone=True), nullable=True)
     notes = Column(String(512), nullable=True)
@@ -179,7 +248,10 @@ class BankrollLedger(BaseModel):
     occurred_at = Column(DateTime(timezone=True), nullable=False)
     amount = Column(Numeric(scale=4, precision=12), nullable=False)
     balance_after = Column(Numeric(scale=4, precision=12), nullable=True)
-    source = Column(Enum(LedgerSource), nullable=False)
+    source = Column(
+        EnumFlexible(LedgerSource),
+        nullable=False,
+    )
     recommendation_id = Column(Integer, ForeignKey("recommendations.id"), nullable=True)
     notes = Column(String(512), nullable=True)
 
