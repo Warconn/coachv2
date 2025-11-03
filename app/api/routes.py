@@ -214,6 +214,9 @@ def resolve_recommendation(rec_id: int):
 
     recommendation = Recommendation.query.get_or_404(rec_id)
     event = recommendation.event
+    
+    # Allow force setting an outcome (for corrections)
+    force_outcome = data.get('force_outcome')
 
     # Allow caller to omit explicit 'outcome' and infer from scores.
     outcome_raw = data.get("outcome")
@@ -249,7 +252,14 @@ def resolve_recommendation(rec_id: int):
     # Determine the resolved_result to apply
     resolved_result: BetResult | None = None
 
-    if outcome_raw:
+    if force_outcome:
+        # For manual corrections, use the forced outcome directly
+        try:
+            resolved_result = BetResult(force_outcome.lower())
+        except ValueError:
+            valid = ", ".join([result.value for result in BetResult])
+            return jsonify({"error": f"Outcome must be one of: {valid}"}), 400
+    elif outcome_raw:
         try:
             resolved_result = BetResult(outcome_raw.lower())
         except ValueError:

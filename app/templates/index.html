@@ -6,7 +6,7 @@
     <title>CoachV2 Dashboard</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
   </head>
-  <body data-unit-value="{{ unit_value }}" data-timezone="{{ display_timezone }}">
+  <body data-unit-value="{{ unit_value }}">
     <header class="app-header">
       <div>
         <h1>CoachV2</h1>
@@ -156,7 +156,6 @@
 
     <script>
       const API_BASE = '/api';
-      const displayTimezone = document.body.dataset.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
       const tableBody = document.getElementById('recommendations-body');
       const statusMessage = document.getElementById('status-message');
       const limitSelect = document.getElementById('limit-select');
@@ -409,15 +408,38 @@
         }
         const home = rec.event.home_team || 'Home';
         const away = rec.event.away_team || 'Away';
+        
+        function formatGameTime(timestamp) {
+          if (!timestamp) return '';
+          const date = new Date(timestamp);
+          if (Number.isNaN(date.getTime())) return timestamp;
+          
+          // Convert UTC to Eastern by subtracting offset
+          date.setTime(date.getTime() - (5 * 60 * 60 * 1000)); // Subtract 5 hours for EST
+          
+          // Format in Eastern Time
+          const options = {
+            timeZone: 'America/New_York',
+            month: 'numeric',
+            day: 'numeric',
+            year: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true,
+            timeZoneName: 'short'
+          };
+          return new Intl.DateTimeFormat('en-US', options).format(date);
+        }
+        
         // Prefer showing a resolved time if the event has been completed.
         // Some events in the DB have incorrect commence_time (future) but do
         // include a resolved_at timestamp; prefer that to avoid showing a
         // future start time for a game that already finished.
         let time = '';
         if (rec.event.resolved_at) {
-          time = formatDatetime(rec.event.resolved_at) + ' (final)';
+          time = formatGameTime(rec.event.resolved_at) + ' (final)';
         } else if (rec.event.commence_time) {
-          time = formatDatetime(rec.event.commence_time);
+          time = formatGameTime(rec.event.commence_time);
         }
         const score = formatScore(rec);
         const scoreLine = score ? `<br/><span class="muted">${score}</span>` : '';
@@ -426,13 +448,23 @@
 
       function formatDate(value) {
         if (!value) return '—';
-        return formatDatetime(value);
-      }
-
-      function formatDatetime(value) {
         const date = new Date(value);
         if (Number.isNaN(date.getTime())) return value;
-        return date.toLocaleString('en-US', { timeZone: displayTimezone });
+        
+        // Convert UTC to Eastern by subtracting offset
+        date.setTime(date.getTime() - (5 * 60 * 60 * 1000)); // Subtract 5 hours for EST
+        
+        const options = {
+          timeZone: 'America/New_York',
+          month: 'numeric',
+          day: 'numeric',
+          year: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+          timeZoneName: 'short'
+        };
+        return new Intl.DateTimeFormat('en-US', options).format(date);
       }
 
       function capitalize(word) {
@@ -503,6 +535,16 @@
         if (!cell) return;
 
         cell.innerHTML = '';
+        
+        // Add edit outcome button if resolved
+        if (state.view === 'history' && rec.outcome) {
+          const editOutcomeBtn = document.createElement('button');
+          editOutcomeBtn.type = 'button';
+          editOutcomeBtn.className = 'edit-outcome-btn';
+          editOutcomeBtn.textContent = 'Edit Outcome';
+          editOutcomeBtn.addEventListener('click', () => editOutcome(rec));
+          cell.appendChild(editOutcomeBtn);
+        }
 
         const logButton = document.createElement('button');
         logButton.type = 'button';
@@ -868,6 +910,45 @@
         outcomeModal.classList.add('hidden');
       }
 
+      async function editOutcome(rec) {
+        const options = ['won', 'lost', 'push', 'void', 'pending'];
+        const currentOutcome = rec.outcome || 'pending';
+        
+        const message = `Current outcome for ${rec.team || rec.bet_side}: ${currentOutcome.toUpperCase()}\n\nSelect new outcome:`;
+        const outcome = prompt(message, currentOutcome);
+        
+        if (!outcome) return;  // User cancelled
+        
+        const normalized = outcome.toLowerCase().trim();
+        if (!options.includes(normalized)) {
+          alert('Invalid outcome. Must be one of: ' + options.join(', '));
+          return;
+        }
+        
+        if (!confirm(`Change outcome to ${normalized.toUpperCase()}?`)) return;
+        
+        try {
+          const response = await fetch(`${API_BASE}/recommendations/${rec.id}/resolve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              force_outcome: normalized
+            }),
+          });
+          
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.error || `Request failed (${response.status})`);
+          }
+          
+          await fetchRecommendations();
+          statusMessage.textContent = `Updated outcome for ${rec.team || rec.bet_side} to ${normalized.toUpperCase()}.`;
+        } catch (err) {
+          console.error(err);
+          alert(err.message || 'Failed to update outcome.');
+        }
+      }
+      
       async function submitOutcomeUpdates() {
         const rows = Array.from(outcomeTableBody.querySelectorAll('tr'));
         if (!rows.length) {
