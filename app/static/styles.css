@@ -71,6 +71,19 @@ button:disabled {
   cursor: wait;
 }
 
+.log-bet-btn {
+  padding: 0.35rem 0.6rem;
+  background-color: #e6edf9;
+  border: 1px solid #b7c7e6;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.log-bet-btn:hover:not(:disabled) {
+  background-color: #d6e4fb;
+}
+
 main {
   padding: 1.5rem 2rem 2.5rem;
 }

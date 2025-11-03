@@ -9,7 +9,7 @@ from flask import current_app
 from sqlalchemy.exc import IntegrityError
 
 from app import db
-from app.models import Event, OddsSnapshot, Sportsbook
+from app.models import Event, MovementDirection, OddsSnapshot, Sportsbook
 from app.services.movement import detect_reverse_line_move
 from app.services.odds import OddsClient, OddsProviderRegistry
 from app.utils.odds import american_to_implied_probability
@@ -57,6 +57,7 @@ def persist_snapshot_batch(data: List[dict]) -> None:
     inserted = 0
     skipped = 0
     recommendations_created = 0
+    recommendations_by_event: Dict[int, list] = {}
 
     for event_payload in data:
         provider_name = event_payload.get("provider", "unknown")
@@ -128,6 +129,7 @@ def persist_snapshot_batch(data: List[dict]) -> None:
             if recommendation:
                 db.session.add(recommendation)
                 recommendations_created += 1
+                recommendations_by_event.setdefault(event.id, []).append(recommendation)
             inserted += 1
 
     try:
@@ -136,6 +138,8 @@ def persist_snapshot_batch(data: List[dict]) -> None:
         db.session.rollback()
         logger.exception("Failed to persist odds snapshots: %s", exc)
         raise
+
+    _promote_multi_book_recommendations(recommendations_by_event)
 
     logger.info(
         "Persisted %s snapshots (skipped %s duplicates, %s recommendations)",
@@ -234,6 +238,28 @@ def _previous_snapshot(
     if fetched_at is not None:
         query = query.filter(OddsSnapshot.fetched_at < fetched_at)
     return query.order_by(OddsSnapshot.fetched_at.desc()).first()
+
+
+def _promote_multi_book_recommendations(recommendations_by_event: Dict[int, list]) -> None:
+    if not recommendations_by_event:
+        return
+
+    updated = False
+    for recs in recommendations_by_event.values():
+        if len(recs) < 2:
+            continue
+        for rec in recs:
+            if rec.direction != MovementDirection.REVERSE:
+                continue
+            if rec.confidence != "high":
+                rec.confidence = "high"
+                details = rec.details or {}
+                details["multi_book_confirmed"] = True
+                rec.details = details
+                updated = True
+
+    if updated:
+        db.session.commit()
 
 
 def _extract_market(markets: List[dict], key: str) -> Optional[dict]:

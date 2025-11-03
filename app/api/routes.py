@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from decimal import Decimal
 from flask import current_app, jsonify, request
 
-from app.models import Event, Recommendation
+from app import db
+from app.models import Bet, BetResult, Event, Recommendation
 from app.worker.tasks import run_ingest_cycle
 
 from . import api_bp
@@ -57,6 +59,18 @@ def recommendations_index():
             elif rec.bet_side == "away":
                 team = event.away_team
 
+        bets_payload = [
+            {
+                "id": bet.id,
+                "stake": float(bet.stake) if bet.stake is not None else None,
+                "price": bet.price,
+                "result": bet.result.value if bet.result else None,
+                "placed_at": bet.placed_at.isoformat() if bet.placed_at else None,
+                "notes": bet.notes,
+            }
+            for bet in rec.bets
+        ]
+
         payload.append(
             {
                 "id": rec.id,
@@ -79,6 +93,9 @@ def recommendations_index():
                 "confidence": rec.confidence,
                 "status": rec.status.value if rec.status else None,
                 "details": rec.details or {},
+                "bet_logged": bool(bets_payload),
+                "bet_count": len(bets_payload),
+                "bets": bets_payload,
             }
         )
 
@@ -92,3 +109,48 @@ def trigger_ingestion():
     app = current_app._get_current_object()
     run_ingest_cycle(app)
     return jsonify({"status": "ingestion_started"})
+
+
+@api_bp.post("/recommendations/<int:rec_id>/bets")
+def log_bet(rec_id: int):
+    data = request.get_json() or {}
+
+    recommendation = Recommendation.query.get_or_404(rec_id)
+
+    try:
+        stake = Decimal(str(data.get("stake", 1)))
+    except Exception as exc:  # pylint: disable=broad-except
+        return jsonify({"error": f"Invalid stake: {exc}"}), 400
+
+    if stake <= 0:
+        return jsonify({"error": "Stake must be positive"}), 400
+
+    details = recommendation.details or {}
+
+    try:
+        price = int(data.get("price") or details.get("current_price"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid price"}), 400
+
+    notes = data.get("notes")
+
+    bet = Bet(
+        sportsbook_id=recommendation.sportsbook_id,
+        recommendation_id=recommendation.id,
+        event_id=recommendation.event_id,
+        bet_side=recommendation.bet_side,
+        placed_at=datetime.now(timezone.utc),
+        stake=stake,
+        price=price,
+        result=BetResult.PENDING,
+        notes=notes,
+    )
+
+    current_app.logger.info(
+        "Logging bet for recommendation %s with stake %s @ %s", rec_id, stake, price
+    )
+
+    db.session.add(bet)
+    db.session.commit()
+
+    return jsonify({"status": "bet_logged", "bet_id": bet.id})

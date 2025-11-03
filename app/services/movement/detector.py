@@ -44,6 +44,8 @@ def detect_reverse_line_move(snapshot, previous_snapshot) -> Optional[Recommenda
 
     threshold_cents = current_app.config.get("MOVEMENT_THRESHOLD_CENTS", 15)
     cooldown_minutes = current_app.config.get("MOVEMENT_COOLDOWN_MINUTES", 180)
+    medium_multiplier = current_app.config.get("MOVEMENT_MEDIUM_MULTIPLIER", 2.0)
+    high_multiplier = current_app.config.get("MOVEMENT_HIGH_MULTIPLIER", 3.0)
 
     if movement.movement_cents < threshold_cents:
         return None
@@ -51,7 +53,9 @@ def detect_reverse_line_move(snapshot, previous_snapshot) -> Optional[Recommenda
     if not _passes_cooldown(snapshot, movement.bet_side, cooldown_minutes):
         return None
 
-    confidence = _confidence_bucket(movement.movement_cents, threshold_cents)
+    confidence = _confidence_bucket(
+        movement.movement_cents, threshold_cents, medium_multiplier, high_multiplier
+    )
 
     recommendation = Recommendation(
         event_id=snapshot.event_id,
@@ -174,9 +178,11 @@ def _passes_cooldown(snapshot, bet_side: str, cooldown_minutes: int) -> bool:
     return existing is None
 
 
-def _confidence_bucket(movement_cents: int, threshold: int) -> str:
-    if movement_cents >= threshold * 2:
+def _confidence_bucket(
+    movement_cents: int, threshold: int, medium_multiplier: float, high_multiplier: float
+) -> str:
+    if movement_cents >= threshold * high_multiplier:
         return "high"
-    if movement_cents >= threshold * 1.5:
+    if movement_cents >= threshold * medium_multiplier:
         return "medium"
     return "low"

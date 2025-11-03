@@ -65,12 +65,11 @@
           <span class="info-icon" data-tooltip="CoachV2 flags reverse line moves where the underdog price tightens past your threshold.">i</span>
         </div>
         <ul>
-          <li>Consider wagering when the reverse-move signal aligns with your handicap and you can still grab the tightened price before the market fully adjusts.</li>
-          <li>Rows highlighted in gold mean multiple sportsbooks flagged the same reverse move – treat these as higher-confidence opportunities.</li>
-          <li>Check multiple books — sharper books (e.g., Pinnacle, Circa) moving with the alert add confidence even if they are not listed here yet.</li>
-          <li>The recommendation always points to the underdog side whose odds tightened (home or away). Reverse moves are significant because money is hitting the dog despite the price dropping.</li>
-          <li>Pass on alerts when key injuries, weather, or rest disadvantages contradict the move. Use the matchup tooltip for start times.</li>
-          <li>High confidence indicates at least 2× the configured cent move; Medium is ≥1.5×. Use confidence to filter to your desired risk level.</li>
+          <li><strong>We’re always betting the dog.</strong> The recommendation points to whichever side’s moneyline tightened. “Home” or “away” just tells you which dugout the dog sits in.</li>
+          <li><strong>Gold rows = market agreement.</strong> When more than one book shows the same reverse move, we highlight the row and automatically bump confidence.</li>
+          <li><strong>Confidence tiers.</strong> “High” needs either a monster move (≥ threshold × high multiplier) or multi-book confirmation. “Medium” lands between the medium and high multipliers. Anything smaller stays “Low.”</li>
+          <li><strong>Verify the narrative.</strong> Reverse moves usually mean sharp action, but still double-check injuries, lineups, and weather before placing a ticket. The matchup tooltip gives start time.</li>
+          <li><strong>Track what you fire.</strong> Log the bets you actually play so we can review ROI by confidence, book, and sport.</li>
         </ul>
         <p class="ingest-note">
           <strong>Run Ingestion</strong> pulls fresh odds immediately. It’s helpful before placing bets or if you suspect the market has moved since the last scheduled sweep.
@@ -88,6 +87,7 @@
               <th scope="col" data-sort="bet_side">Recommendation <span class="sort-indicator"></span></th>
               <th scope="col" data-sort="movement">Odds Move <span class="sort-indicator"></span></th>
               <th scope="col" data-sort="confidence">Confidence <span class="sort-indicator"></span></th>
+              <th scope="col">Bet</th>
             </tr>
           </thead>
           <tbody id="recommendations-body"></tbody>
@@ -104,6 +104,7 @@
         <td class="side"></td>
         <td class="movement"></td>
         <td class="confidence"></td>
+        <td class="bet-action"></td>
       </tr>
     </template>
 
@@ -227,7 +228,7 @@
         const sorted = sortRecommendations(filtered, state.sort);
         renderRecommendations(sorted);
         updateSortIndicators();
-        updateStatusSummary(sorted.length);
+        updateStatusSummary(sorted);
       }
 
       function sortRecommendations(recommendations, sort) {
@@ -275,6 +276,7 @@
           emptyRow.querySelector('.side').textContent = '—';
           emptyRow.querySelector('.movement').textContent = '—';
           emptyRow.querySelector('.confidence').textContent = '—';
+          emptyRow.querySelector('.bet-action').textContent = '—';
           tableBody.appendChild(emptyRow);
           return;
         }
@@ -296,10 +298,12 @@
           row.querySelector('.movement').textContent = formatMovement(rec);
           row.querySelector('.confidence').textContent = rec.confidence || '—';
           const rowElement = row.querySelector('tr');
-          if (rec.event?.id && eventCounts[rec.event.id] > 1) {
+          const multiBookFlag = rec.details?.multi_book_confirmed;
+          if ((rec.event?.id && eventCounts[rec.event.id] > 1) || multiBookFlag) {
             rowElement.classList.add('multi-book');
             rowElement.title = 'Same game flagged by multiple books';
           }
+          attachBetHandler(rowElement, rec);
           tableBody.appendChild(row);
         }
       }
@@ -375,12 +379,78 @@
         return `${formatAmericanOdds(prev)} → ${formatAmericanOdds(curr)}`;
       }
 
-      function updateStatusSummary(filteredCount) {
+      function attachBetHandler(rowElement, rec) {
+        const cell = rowElement.querySelector('.bet-action');
+        if (!cell) return;
+
+        cell.innerHTML = '';
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'log-bet-btn';
+
+        if (rec.bet_logged) {
+          button.textContent = 'Logged';
+          button.disabled = true;
+        } else {
+          button.textContent = 'Log Bet';
+          button.addEventListener('click', () => logBet(rec, button));
+        }
+
+        cell.appendChild(button);
+      }
+
+      async function logBet(rec, button) {
+        try {
+          const defaultStake = rec.bets?.[0]?.stake || 1;
+          const stakeInput = prompt('Stake (units)', defaultStake);
+          if (stakeInput === null) return;
+
+          const oddsSuggestion = rec.details?.current_price ?? '';
+          const priceInput = prompt('Odds (American)', oddsSuggestion);
+          if (priceInput === null) return;
+
+          const notesInput = prompt('Notes (optional)', '');
+
+          button.disabled = true;
+          button.textContent = 'Saving…';
+
+          const response = await fetch(`${API_BASE}/recommendations/${rec.id}/bets`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              stake: stakeInput,
+              price: priceInput,
+              notes: notesInput,
+            }),
+          });
+
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.error || `Request failed (${response.status})`);
+          }
+
+          rec.bet_logged = true;
+          rec.bets = rec.bets || [];
+          rec.bets.push({ stake: parseFloat(stakeInput), price: priceInput, notes: notesInput });
+          button.textContent = 'Logged';
+          statusMessage.textContent = `Logged bet on ${rec.team || rec.bet_side} (${rec.sportsbook_name || rec.sportsbook}).`;
+        } catch (err) {
+          console.error(err);
+          alert(err.message || 'Failed to log bet.');
+          button.disabled = false;
+          button.textContent = 'Log Bet';
+        }
+      }
+
+      function updateStatusSummary(filteredRecommendations) {
         const total = state.data.length;
+        const filteredCount = filteredRecommendations.length;
+        const loggedCount = filteredRecommendations.filter((rec) => rec.bet_logged).length;
         const refreshed = state.lastRefreshed
           ? state.lastRefreshed.toLocaleTimeString()
           : '—';
-        statusMessage.textContent = `Showing ${filteredCount} of ${total} recommendations · Last refreshed ${refreshed}`;
+        statusMessage.textContent = `Showing ${filteredCount} of ${total} recommendations · Logged bets: ${loggedCount} · Last refreshed ${refreshed}`;
       }
 
       async function runIngestion() {

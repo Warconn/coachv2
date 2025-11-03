@@ -26,11 +26,13 @@ Update `requirements.txt` so future installs use `psycopg[binary]`, and set `DAT
 ### Reverse line movement API
 - `GET /api/recommendations?limit=50` – returns the most recent reverse line movement alerts persisted by the ingestion worker.
 - `POST /api/ingest` – runs an on-demand ingestion cycle (also wired to the dashboard button).
+- `POST /api/recommendations/<id>/bets` – log a wager tied to a recommendation (the dashboard button uses this endpoint).
 
 ### Dashboard tips
 - Use the League, Sportsbook, and Confidence dropdowns to narrow the table to the alerts you care about most.
 - Click any sortable column header (Triggered, Odds Move, Confidence, etc.) to toggle ascending/descending order.
 - Rows highlighted in gold indicate that multiple sportsbooks showed the same reverse move for that matchup.
+- Use the **Log Bet** button to capture stakes and odds so you can analyse performance later.
 - Hover the info icon in the "When should I bet?" panel for reminders on how to interpret the reverse-move signal and what factors to double-check before betting.
 - The **Run Ingestion** button triggers the same ingestion worker immediately, giving you up-to-the-minute lines outside the scheduled cadence.
 
