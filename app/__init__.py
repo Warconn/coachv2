@@ -32,8 +32,10 @@ def create_app(config_object: Optional[Type[Any]] = None) -> Flask:
 
     # Register HTTP routes via blueprints
     from .api.routes import api_bp
+    from .ui.routes import ui_bp
 
-    app.register_blueprint(api_bp)
+    app.register_blueprint(ui_bp)
+    app.register_blueprint(api_bp, url_prefix="/api")
 
     # Ensure URL generation works behind proxies/load balancers when deployed remotely.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)

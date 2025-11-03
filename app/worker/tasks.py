@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app import db
 from app.models import Event, OddsSnapshot, Sportsbook
+from app.services.movement import detect_reverse_line_move
 from app.services.odds import OddsClient, OddsProviderRegistry
 from app.utils.odds import american_to_implied_probability
 
@@ -55,6 +56,7 @@ def persist_snapshot_batch(data: List[dict]) -> None:
 
     inserted = 0
     skipped = 0
+    recommendations_created = 0
 
     for event_payload in data:
         provider_name = event_payload.get("provider", "unknown")
@@ -90,6 +92,14 @@ def persist_snapshot_batch(data: List[dict]) -> None:
                 skipped += 1
                 continue
 
+            previous_snapshot = _previous_snapshot(
+                event.id,
+                sportsbook.id,
+                provider_name,
+                market.get("key", "h2h"),
+                fetched_at,
+            )
+
             snapshot = OddsSnapshot(
                 event_id=event.id,
                 sportsbook_id=sportsbook.id,
@@ -112,6 +122,12 @@ def persist_snapshot_batch(data: List[dict]) -> None:
             )
 
             db.session.add(snapshot)
+            db.session.flush()
+
+            recommendation = detect_reverse_line_move(snapshot, previous_snapshot)
+            if recommendation:
+                db.session.add(recommendation)
+                recommendations_created += 1
             inserted += 1
 
     try:
@@ -121,7 +137,12 @@ def persist_snapshot_batch(data: List[dict]) -> None:
         logger.exception("Failed to persist odds snapshots: %s", exc)
         raise
 
-    logger.info("Persisted %s snapshots (skipped %s duplicates)", inserted, skipped)
+    logger.info(
+        "Persisted %s snapshots (skipped %s duplicates, %s recommendations)",
+        inserted,
+        skipped,
+        recommendations_created,
+    )
 
 
 def _ensure_sportsbooks(bookmakers: Iterable[str]) -> None:
@@ -195,6 +216,24 @@ def _snapshot_exists(
         ).first()
         is not None
     )
+
+
+def _previous_snapshot(
+    event_id: int,
+    sportsbook_id: int,
+    provider: str,
+    market_key: str,
+    fetched_at: Optional[datetime],
+) -> Optional[OddsSnapshot]:
+    query = OddsSnapshot.query.filter_by(
+        event_id=event_id,
+        sportsbook_id=sportsbook_id,
+        provider=provider,
+        market_key=market_key,
+    )
+    if fetched_at is not None:
+        query = query.filter(OddsSnapshot.fetched_at < fetched_at)
+    return query.order_by(OddsSnapshot.fetched_at.desc()).first()
 
 
 def _extract_market(markets: List[dict], key: str) -> Optional[dict]:

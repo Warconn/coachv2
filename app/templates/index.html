@@ -1,12 +1,162 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>CoachV2 Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
   </head>
   <body>
-    <h1>CoachV2 Dashboard</h1>
-    <p>This placeholder UI will evolve into the full dashboard for line movement monitoring.</p>
+    <header class="app-header">
+      <div>
+        <h1>CoachV2</h1>
+        <p class="subtitle">Reverse moneyline movement monitor</p>
+      </div>
+      <div class="actions">
+        <label for="limit-select">Show</label>
+        <select id="limit-select">
+          <option value="25">25</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+        </select>
+        <button id="refresh-btn" type="button">Refresh</button>
+        <button id="ingest-btn" type="button" class="primary">Run Ingestion</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="status-bar" id="status-bar">
+        <span id="status-message">Loading recommendations…</span>
+      </section>
+
+      <section class="table-container">
+        <table id="recommendations-table">
+          <thead>
+            <tr>
+              <th>Triggered</th>
+              <th>League</th>
+              <th>Matchup</th>
+              <th>Sportsbook</th>
+              <th>Side</th>
+              <th>Movement</th>
+              <th>Edge</th>
+              <th>Confidence</th>
+            </tr>
+          </thead>
+          <tbody id="recommendations-body"></tbody>
+        </table>
+      </section>
+    </main>
+
+    <template id="row-template">
+      <tr>
+        <td class="triggered"></td>
+        <td class="league"></td>
+        <td class="matchup"></td>
+        <td class="sportsbook"></td>
+        <td class="side"></td>
+        <td class="movement"></td>
+        <td class="edge"></td>
+        <td class="confidence"></td>
+      </tr>
+    </template>
+
+    <script>
+      const API_BASE = '/api';
+      const tableBody = document.getElementById('recommendations-body');
+      const statusMessage = document.getElementById('status-message');
+      const limitSelect = document.getElementById('limit-select');
+      const refreshBtn = document.getElementById('refresh-btn');
+      const ingestBtn = document.getElementById('ingest-btn');
+      const rowTemplate = document.getElementById('row-template');
+
+      async function fetchRecommendations(limit) {
+        statusMessage.textContent = 'Loading recommendations…';
+        tableBody.innerHTML = '';
+        try {
+          const response = await fetch(`${API_BASE}/recommendations?limit=${limit}`);
+          if (!response.ok) {
+            throw new Error(`API error ${response.status}`);
+          }
+          const data = await response.json();
+          renderRecommendations(data);
+          const timestamp = new Date().toLocaleTimeString();
+          statusMessage.textContent = `Showing ${data.length} recommendations · Last refreshed ${timestamp}`;
+        } catch (err) {
+          console.error(err);
+          statusMessage.textContent = 'Failed to load recommendations. Check logs and try again.';
+        }
+      }
+
+      function renderRecommendations(recommendations) {
+        if (!recommendations.length) {
+          const emptyRow = rowTemplate.content.cloneNode(true);
+          emptyRow.querySelector('.triggered').textContent = '—';
+          emptyRow.querySelector('.league').textContent = '—';
+          emptyRow.querySelector('.matchup').textContent = 'No recommendations yet';
+          emptyRow.querySelector('.sportsbook').textContent = '—';
+          emptyRow.querySelector('.side').textContent = '—';
+          emptyRow.querySelector('.movement').textContent = '—';
+          emptyRow.querySelector('.edge').textContent = '—';
+          emptyRow.querySelector('.confidence').textContent = '—';
+          tableBody.appendChild(emptyRow);
+          return;
+        }
+
+        for (const rec of recommendations) {
+          const row = rowTemplate.content.cloneNode(true);
+          row.querySelector('.triggered').textContent = formatDate(rec.triggered_at);
+          row.querySelector('.league').textContent = rec.event && rec.event.league ? rec.event.league : rec.event?.sport_key || '—';
+          row.querySelector('.matchup').innerHTML = formatMatchup(rec);
+          row.querySelector('.sportsbook').textContent = rec.sportsbook_name || rec.sportsbook || '—';
+          row.querySelector('.side').textContent = rec.team ? `${rec.team} (${rec.bet_side})` : rec.bet_side;
+          row.querySelector('.movement').textContent = `${rec.movement_cents}¢`;
+          row.querySelector('.edge').textContent = rec.edge ? `${(parseFloat(rec.edge) * 100).toFixed(2)}%` : '—';
+          row.querySelector('.confidence').textContent = rec.confidence || '—';
+          tableBody.appendChild(row);
+        }
+      }
+
+      function formatMatchup(rec) {
+        if (!rec.event) {
+          return '—';
+        }
+        const home = rec.event.home_team || 'Home';
+        const away = rec.event.away_team || 'Away';
+        const time = rec.event.commence_time ? new Date(rec.event.commence_time).toLocaleString() : '';
+        return `<strong>${away}</strong> @ <strong>${home}</strong><br/><span class="muted">${time}</span>`;
+      }
+
+      function formatDate(value) {
+        if (!value) return '—';
+        const date = new Date(value);
+        return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+      }
+
+      async function runIngestion() {
+        ingestBtn.disabled = true;
+        ingestBtn.textContent = 'Running…';
+        try {
+          const response = await fetch(`${API_BASE}/ingest`, { method: 'POST' });
+          if (!response.ok) {
+            throw new Error(`Failed to trigger ingestion (${response.status})`);
+          }
+          await fetchRecommendations(limitSelect.value);
+          statusMessage.textContent = 'Ingestion complete. Recommendations refreshed.';
+        } catch (err) {
+          console.error(err);
+          statusMessage.textContent = 'Ingestion failed. Check logs and retry.';
+        } finally {
+          ingestBtn.disabled = false;
+          ingestBtn.textContent = 'Run Ingestion';
+        }
+      }
+
+      refreshBtn.addEventListener('click', () => fetchRecommendations(limitSelect.value));
+      ingestBtn.addEventListener('click', runIngestion);
+      limitSelect.addEventListener('change', () => fetchRecommendations(limitSelect.value));
+
+      fetchRecommendations(limitSelect.value);
+    </script>
   </body>
 </html>
-

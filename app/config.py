@@ -52,3 +52,6 @@ class DefaultConfig:
     INGEST_CRON_MORNING = os.getenv("INGEST_CRON_MORNING", "0 9 * * *")
     INGEST_CRON_EVENING = os.getenv("INGEST_CRON_EVENING", "0 19 * * *")
     TIMEZONE = os.getenv("TIMEZONE", "America/New_York")
+
+    MOVEMENT_THRESHOLD_CENTS = int(os.getenv("MOVEMENT_THRESHOLD_CENTS", "15"))
+    MOVEMENT_COOLDOWN_MINUTES = int(os.getenv("MOVEMENT_COOLDOWN_MINUTES", "180"))

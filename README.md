@@ -13,7 +13,7 @@ CoachV2 is a work-in-progress platform for monitoring moneyline movements across
    ```bash
    docker-compose up --build
    ```
-3. Access the web UI at `http://localhost:5000`.
+3. Access the web UI at `http://localhost:5000` (includes one-click ingestion and live recommendations table).
 
 ### Python 3.14 note
 The `psycopg2-binary` package does not yet ship wheels for Python 3.14. If you are running Python 3.14 locally, replace the dependency and use the new driver instead:
@@ -22,6 +22,10 @@ pip uninstall psycopg2-binary
 pip install 'psycopg[binary]'
 ```
 Update `requirements.txt` so future installs use `psycopg[binary]`, and set `DATABASE_URL` to use the `postgresql+psycopg://` driver string in your `.env`.
+
+### Reverse line movement API
+- `GET /api/recommendations?limit=50` – returns the most recent reverse line movement alerts persisted by the ingestion worker.
+- `POST /api/ingest` – runs an on-demand ingestion cycle (also wired to the dashboard button).
 
 ## Project Status
 - [x] Repository scaffolding
