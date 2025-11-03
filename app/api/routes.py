@@ -215,15 +215,8 @@ def resolve_recommendation(rec_id: int):
     recommendation = Recommendation.query.get_or_404(rec_id)
     event = recommendation.event
 
+    # Allow caller to omit explicit 'outcome' and infer from scores.
     outcome_raw = data.get("outcome")
-    if not outcome_raw:
-        return jsonify({"error": "Outcome is required"}), 400
-
-    try:
-        outcome = BetResult(outcome_raw.lower())
-    except ValueError:
-        valid = ", ".join([result.value for result in BetResult])
-        return jsonify({"error": f"Outcome must be one of: {valid}"}), 400
 
     closing_price = data.get("closing_price")
     try:
@@ -231,21 +224,61 @@ def resolve_recommendation(rec_id: int):
     except (TypeError, ValueError):
         return jsonify({"error": "Invalid closing price"}), 400
 
+    # parse optional scores
     home_score = data.get("home_score")
     away_score = data.get("away_score")
 
     try:
-        home_score_val = int(home_score) if home_score is not None else None
-        away_score_val = int(away_score) if away_score is not None else None
+        home_score_val = int(home_score) if home_score is not None and home_score != "" else None
+        away_score_val = int(away_score) if away_score is not None and away_score != "" else None
     except (TypeError, ValueError):
         return jsonify({"error": "Scores must be integers"}), 400
 
+    # If scores weren't provided, try using event scores
+    if (home_score_val is None or away_score_val is None) and event:
+        try:
+            if home_score_val is None:
+                home_score_val = event.home_score
+            if away_score_val is None:
+                away_score_val = event.away_score
+        except Exception:
+            pass
+
     resolved_at = datetime.now(timezone.utc)
 
-    recommendation.resolved_result = outcome
+    # Determine the resolved_result to apply
+    resolved_result: BetResult | None = None
+
+    if outcome_raw:
+        try:
+            resolved_result = BetResult(outcome_raw.lower())
+        except ValueError:
+            valid = ", ".join([result.value for result in BetResult])
+            return jsonify({"error": f"Outcome must be one of: {valid}"}), 400
+    else:
+        # Need both scores to infer outcome
+        if home_score_val is None or away_score_val is None:
+            return jsonify({"error": "Both home_score and away_score are required to infer outcome"}), 400
+
+        if home_score_val == away_score_val:
+            resolved_result = BetResult.PUSH
+        else:
+            # Determine which side won
+            home_won = home_score_val > away_score_val
+            # For this recommendation, the result is WON if the bet_side matches the winner
+            if recommendation.bet_side == 'home':
+                resolved_result = BetResult.WON if home_won else BetResult.LOST
+            elif recommendation.bet_side == 'away':
+                resolved_result = BetResult.WON if not home_won else BetResult.LOST
+            else:
+                # Unknown bet side — fallback to PENDING
+                resolved_result = BetResult.PENDING
+
+    # Apply results
+    recommendation.resolved_result = resolved_result
     recommendation.resolved_at = resolved_at
     recommendation.closing_price = closing_price_val
-    if outcome != BetResult.PENDING:
+    if resolved_result != BetResult.PENDING:
         recommendation.status = RecommendationStatus.SETTLED
 
     if event:
@@ -254,27 +287,57 @@ def resolve_recommendation(rec_id: int):
         event.resolved_at = resolved_at
 
     for bet in recommendation.bets:
-        bet.result = outcome
+        bet.result = resolved_result
         if bet.settled_at is None:
             bet.settled_at = resolved_at
 
     db.session.commit()
 
     current_app.logger.info(
-        "Resolved recommendation %s as %s", rec_id, outcome.value
+        "Resolved recommendation %s as %s", rec_id, resolved_result.value
     )
 
-    return jsonify({"status": "resolved", "outcome": outcome.value})
+    return jsonify({"status": "resolved", "outcome": resolved_result.value})
 
 
 @api_bp.post("/recommendations/bulk_resolve")
-def bulk_resolve_recommendations():
+async def bulk_resolve_recommendations():
     payload = request.get_json() or {}
     items = payload.get("items", [])
     if not isinstance(items, list) or not items:
         return jsonify({"error": "items must be a non-empty list"}), 400
 
+    # Get current timestamp once for consistency
     now = datetime.now(timezone.utc)
+
+    # Filter out any recommendations for games that haven't started yet
+    filtered_items = []
+    rejected = 0
+    
+    for item in items:
+        rec_id = item.get("id")
+        event_id = item.get("event_id")
+        
+        recommendation = Recommendation.query.get(rec_id) if rec_id else None
+        event = recommendation.event if recommendation else None
+        
+        if not event and event_id:
+            event = Event.query.get(event_id)
+            
+        # Skip items where the game hasn't started yet
+        if event and event.commence_time and event.commence_time > now:
+            rejected += 1
+            continue
+            
+        filtered_items = filtered_items + [item]
+    
+    if rejected:
+        current_app.logger.info(f"Skipped {rejected} recommendations for future games")
+    
+    items = filtered_items
+    if not items:
+        return jsonify({"error": "No eligible recommendations to update"}), 400
+        
     updated = 0
 
     for entry in items:
@@ -293,14 +356,56 @@ def bulk_resolve_recommendations():
         if not recommendation:
             continue
 
+        # Outcome may be omitted from the UI. If not provided, compute it
+        # from the supplied scores (or the event scores) so the engine
+        # determines won/lost/push for bets.
         outcome_raw = entry.get("outcome")
-        if not outcome_raw:
-            continue
+
+        # helper to parse optional ints
+        def _optional_int(value):
+            if value in (None, "", []):
+                return None
+            return int(value)
 
         try:
-            outcome = BetResult(outcome_raw.lower())
-        except ValueError:
+            home_score_val = _optional_int(entry.get("home_score"))
+            away_score_val = _optional_int(entry.get("away_score"))
+        except (TypeError, ValueError):
+            # Bad scores — skip this entry
             continue
+
+        # If event has scores and none provided in entry, use event values
+        if (home_score_val is None or away_score_val is None) and event:
+            try:
+                if home_score_val is None:
+                    home_score_val = event.home_score
+                if away_score_val is None:
+                    away_score_val = event.away_score
+            except Exception:
+                pass
+
+        outcome = None
+        if outcome_raw:
+            try:
+                outcome = BetResult(outcome_raw.lower())
+            except ValueError:
+                # invalid provided outcome -> skip
+                continue
+        else:
+            # If both scores are present, derive an outcome for h2h bets
+            if home_score_val is None or away_score_val is None:
+                # cannot determine outcome without both scores
+                continue
+
+            if home_score_val == away_score_val:
+                outcome = BetResult.PUSH
+            else:
+                home_won = home_score_val > away_score_val
+                # For each recommendation we will mark won/lost depending on bet_side
+                # Here we set a canonical outcome representing the winning side
+                # We'll store a special marker string and apply per-bet below.
+                # But to keep existing schema, pick WON and mark bets appropriately
+                outcome = BetResult.WON
 
         closing_price_val = None
         closing_price_raw = entry.get("closing_price")
@@ -332,14 +437,35 @@ def bulk_resolve_recommendations():
         )
 
         for rec in target_recommendations:
-            rec.resolved_result = outcome
+            # If the outcome was explicitly provided, apply it directly.
+            if outcome and outcome != BetResult.WON:
+                rec_result = outcome
+            else:
+                # outcome == WON is a placeholder when we derived results from scores
+                if outcome == BetResult.WON:
+                    # Determine actual result per recommendation based on bet_side
+                    if home_score_val == away_score_val:
+                        rec_result = BetResult.PUSH
+                    else:
+                        home_won_local = home_score_val > away_score_val
+                        if rec.bet_side == 'home' and home_won_local:
+                            rec_result = BetResult.WON
+                        elif rec.bet_side == 'away' and not home_won_local:
+                            rec_result = BetResult.WON
+                        else:
+                            rec_result = BetResult.LOST
+                else:
+                    # Shouldn't reach here, but fallback to pending
+                    rec_result = BetResult.PENDING
+
+            rec.resolved_result = rec_result
             rec.resolved_at = now
             rec.closing_price = closing_price_val
-            if outcome != BetResult.PENDING:
+            if rec_result != BetResult.PENDING:
                 rec.status = RecommendationStatus.SETTLED
 
             for bet in rec.bets:
-                bet.result = outcome
+                bet.result = rec_result
                 if bet.settled_at is None:
                     bet.settled_at = now
 

@@ -409,9 +409,16 @@
         }
         const home = rec.event.home_team || 'Home';
         const away = rec.event.away_team || 'Away';
-        const time = rec.event.commence_time
-          ? formatDatetime(rec.event.commence_time)
-          : '';
+        // Prefer showing a resolved time if the event has been completed.
+        // Some events in the DB have incorrect commence_time (future) but do
+        // include a resolved_at timestamp; prefer that to avoid showing a
+        // future start time for a game that already finished.
+        let time = '';
+        if (rec.event.resolved_at) {
+          time = formatDatetime(rec.event.resolved_at) + ' (final)';
+        } else if (rec.event.commence_time) {
+          time = formatDatetime(rec.event.commence_time);
+        }
         const score = formatScore(rec);
         const scoreLine = score ? `<br/><span class="muted">${score}</span>` : '';
         return `<strong>${away}</strong> @ <strong>${home}</strong><br/><span class="muted">${time}</span>${scoreLine}`;
@@ -586,20 +593,44 @@
 
       async function resolveRecommendation(rec) {
         try {
-          const outcomeInput = prompt('Outcome (won/lost/push/void)', rec.outcome || 'won');
-          if (outcomeInput === null) return;
+          // Prompt for scores only. We require both scores so server can infer result.
+          const homeScoreInput = prompt('Home score (required)', rec.event?.home_score ?? '');
+          if (homeScoreInput === null) return;
+          const awayScoreInput = prompt('Away score (required)', rec.event?.away_score ?? '');
+          if (awayScoreInput === null) return;
 
-          const normalized = outcomeInput.trim().toLowerCase();
-          const allowed = ['won', 'lost', 'push', 'void'];
-          if (!allowed.includes(normalized)) {
-            alert(`Outcome must be one of: ${allowed.join(', ')}`);
+          const h = homeScoreInput.trim();
+          const a = awayScoreInput.trim();
+          if (h === '' || a === '') {
+            alert('Please enter both home and away scores to determine the outcome.');
             return;
           }
 
-          const homeScoreInput = prompt('Home score (optional)', rec.event?.home_score ?? '');
-          if (homeScoreInput === null) return;
-          const awayScoreInput = prompt('Away score (optional)', rec.event?.away_score ?? '');
-          if (awayScoreInput === null) return;
+          const homeVal = Number(h);
+          const awayVal = Number(a);
+          if (Number.isNaN(homeVal) || Number.isNaN(awayVal)) {
+            alert('Scores must be numeric');
+            return;
+          }
+
+          // Compute derived outcome locally for preview
+          let derived;
+          if (homeVal === awayVal) {
+            derived = 'push';
+          } else {
+            const homeWon = homeVal > awayVal;
+            if (rec.bet_side === 'home') {
+              derived = homeWon ? 'won' : 'lost';
+            } else if (rec.bet_side === 'away') {
+              derived = homeWon ? 'lost' : 'won';
+            } else {
+              derived = 'pending';
+            }
+          }
+
+          const confirmMsg = `This will mark ${rec.team || rec.bet_side} as ${derived.toUpperCase()}\n\nHome: ${homeVal} — Away: ${awayVal}\n\nProceed?`;
+          if (!confirm(confirmMsg)) return;
+
           const closingPriceInput = prompt('Closing price (optional)', rec.closing_price ?? rec.details?.current_price ?? '');
           if (closingPriceInput === null) return;
 
@@ -607,9 +638,8 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              outcome: normalized,
-              home_score: homeScoreInput || null,
-              away_score: awayScoreInput || null,
+              home_score: homeVal,
+              away_score: awayVal,
               closing_price: closingPriceInput || null,
             }),
           });
@@ -623,12 +653,8 @@
           rec.outcome = result.outcome;
           rec.resolved_at = new Date().toISOString();
           if (!rec.event) rec.event = {};
-          if (homeScoreInput) {
-            rec.event.home_score = Number(homeScoreInput);
-          }
-          if (awayScoreInput) {
-            rec.event.away_score = Number(awayScoreInput);
-          }
+          rec.event.home_score = homeVal;
+          rec.event.away_score = awayVal;
           if (closingPriceInput) {
             rec.closing_price = Number(closingPriceInput);
           }
@@ -761,9 +787,22 @@
       submitOutcomesBtn.addEventListener('click', submitOutcomeUpdates);
 
       function openOutcomeModal() {
-        const unresolved = state.data.filter((rec) => !rec.outcome);
+        const now = new Date();
+        
+        // Filter for unresolved recommendations where the game has already started
+        const unresolved = state.data.filter((rec) => {
+          if (rec.outcome) return false; // Skip already resolved
+          
+          // Check if game has started (use resolved_at or commence_time)
+          const eventTime = rec.event?.resolved_at 
+            ? new Date(rec.event.resolved_at)
+            : (rec.event?.commence_time ? new Date(rec.event.commence_time) : null);
+            
+          return !eventTime || eventTime <= now;
+        });
+        
         if (!unresolved.length) {
-          alert('All visible recommendations already have outcomes.');
+          alert('No recommendations available to update (games must have started).');
           return;
         }
 
@@ -785,15 +824,12 @@
           matchupCell.innerHTML = formatMatchup(rec);
           row.appendChild(matchupCell);
 
+          // Outcome will be determined server-side from scores; show a helper label
           const outcomeCell = document.createElement('td');
-          const outcomeSelect = document.createElement('select');
-          ['', 'won', 'lost', 'push', 'void'].forEach((value) => {
-            const opt = document.createElement('option');
-            opt.value = value;
-            opt.textContent = value ? capitalize(value) : 'Select';
-            outcomeSelect.appendChild(opt);
-          });
-          outcomeCell.appendChild(outcomeSelect);
+          const outcomeHint = document.createElement('span');
+          outcomeHint.className = 'muted-inline';
+          outcomeHint.textContent = 'Auto';
+          outcomeCell.appendChild(outcomeHint);
           row.appendChild(outcomeCell);
 
           const homeCell = document.createElement('td');
@@ -842,19 +878,18 @@
         const items = [];
         for (const row of rows) {
           const recId = Number(row.dataset.recId);
-          const outcome = row.querySelector('select').value;
           const inputs = row.querySelectorAll('input');
           const [homeInput, awayInput, closingInput] = inputs;
 
-          if (!outcome) {
-            alert('Please select an outcome for every matchup.');
+          // Require at least one score so the server can infer outcome
+          if ((homeInput.value === '' || homeInput.value == null) && (awayInput.value === '' || awayInput.value == null)) {
+            alert('Please enter at least one score (home or away) so outcome can be determined.');
             return;
           }
 
           items.push({
             id: recId,
             event_id: row.dataset.eventId ? Number(row.dataset.eventId) : null,
-            outcome,
             home_score: homeInput.value || null,
             away_score: awayInput.value || null,
             closing_price: closingInput.value || null,
