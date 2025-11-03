@@ -49,6 +49,9 @@ def recommendations_index():
     )
 
     payload = []
+    unit_value = Decimal(str(current_app.config.get("UNIT_VALUE", 1)))
+    unit_value_float = float(unit_value)
+
     for rec in recommendations:
         event = rec.event
         sportsbook = rec.sportsbook
@@ -62,7 +65,8 @@ def recommendations_index():
         bets_payload = [
             {
                 "id": bet.id,
-                "stake": float(bet.stake) if bet.stake is not None else None,
+                "stake_units": float(bet.stake) if bet.stake is not None else None,
+                "stake_amount": float(bet.stake * unit_value) if bet.stake is not None else None,
                 "price": bet.price,
                 "result": bet.result.value if bet.result else None,
                 "placed_at": bet.placed_at.isoformat() if bet.placed_at else None,
@@ -96,6 +100,7 @@ def recommendations_index():
                 "bet_logged": bool(bets_payload),
                 "bet_count": len(bets_payload),
                 "bets": bets_payload,
+                "unit_value": unit_value_float,
             }
         )
 
@@ -134,6 +139,8 @@ def log_bet(rec_id: int):
 
     notes = data.get("notes")
 
+    unit_value = Decimal(str(current_app.config.get("UNIT_VALUE", 1)))
+
     bet = Bet(
         sportsbook_id=recommendation.sportsbook_id,
         recommendation_id=recommendation.id,
@@ -153,4 +160,12 @@ def log_bet(rec_id: int):
     db.session.add(bet)
     db.session.commit()
 
-    return jsonify({"status": "bet_logged", "bet_id": bet.id})
+    return jsonify(
+        {
+            "status": "bet_logged",
+            "bet_id": bet.id,
+            "stake_units": float(stake),
+            "stake_amount": float(stake * unit_value),
+            "unit_value": float(unit_value),
+        }
+    )

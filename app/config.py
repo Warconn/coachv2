@@ -57,3 +57,4 @@ class DefaultConfig:
     MOVEMENT_COOLDOWN_MINUTES = int(os.getenv("MOVEMENT_COOLDOWN_MINUTES", "180"))
     MOVEMENT_MEDIUM_MULTIPLIER = float(os.getenv("MOVEMENT_MEDIUM_MULTIPLIER", "2.0"))
     MOVEMENT_HIGH_MULTIPLIER = float(os.getenv("MOVEMENT_HIGH_MULTIPLIER", "3.0"))
+    UNIT_VALUE = float(os.getenv("UNIT_VALUE", "1"))

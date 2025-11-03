@@ -28,6 +28,9 @@ Update `requirements.txt` so future installs use `psycopg[binary]`, and set `DAT
 - `POST /api/ingest` – runs an on-demand ingestion cycle (also wired to the dashboard button).
 - `POST /api/recommendations/<id>/bets` – log a wager tied to a recommendation (the dashboard button uses this endpoint).
 
+### Units & staking
+- Set `UNIT_VALUE` in your `.env` (default `2`) to map 1U to your dollar size. The dashboard uses it to show stake totals and dollar equivalents when you log bets.
+
 ### Dashboard tips
 - Use the League, Sportsbook, and Confidence dropdowns to narrow the table to the alerts you care about most.
 - Click any sortable column header (Triggered, Odds Move, Confidence, etc.) to toggle ascending/descending order.

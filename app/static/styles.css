@@ -191,7 +191,7 @@ main {
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 960px;
+  min-width: 1050px;
 }
 
 thead {

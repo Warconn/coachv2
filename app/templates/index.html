@@ -6,7 +6,7 @@
     <title>CoachV2 Dashboard</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
   </head>
-  <body>
+  <body data-unit-value="{{ unit_value }}" data-timezone="{{ display_timezone }}">
     <header class="app-header">
       <div>
         <h1>CoachV2</h1>
@@ -87,7 +87,8 @@
               <th scope="col" data-sort="bet_side">Recommendation <span class="sort-indicator"></span></th>
               <th scope="col" data-sort="movement">Odds Move <span class="sort-indicator"></span></th>
               <th scope="col" data-sort="confidence">Confidence <span class="sort-indicator"></span></th>
-              <th scope="col">Bet</th>
+              <th scope="col">Logged Units</th>
+              <th scope="col">Action</th>
             </tr>
           </thead>
           <tbody id="recommendations-body"></tbody>
@@ -104,12 +105,14 @@
         <td class="side"></td>
         <td class="movement"></td>
         <td class="confidence"></td>
+        <td class="logged-sum"></td>
         <td class="bet-action"></td>
       </tr>
     </template>
 
     <script>
       const API_BASE = '/api';
+      const displayTimezone = document.body.dataset.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
       const tableBody = document.getElementById('recommendations-body');
       const statusMessage = document.getElementById('status-message');
       const limitSelect = document.getElementById('limit-select');
@@ -120,6 +123,7 @@
       const ingestBtn = document.getElementById('ingest-btn');
       const rowTemplate = document.getElementById('row-template');
       const headerCells = document.querySelectorAll('th[data-sort]');
+      let unitValue = parseFloat(document.body.dataset.unitValue || '1');
 
       const state = {
         data: [],
@@ -147,6 +151,10 @@
             throw new Error(`API error ${response.status}`);
           }
           const data = await response.json();
+          if (data.length && data[0].unit_value) {
+            unitValue = parseFloat(data[0].unit_value) || unitValue;
+            document.body.dataset.unitValue = unitValue;
+          }
           state.data = data;
           state.lastRefreshed = new Date();
           populateFilterOptions(data);
@@ -297,6 +305,7 @@
           row.querySelector('.side').innerHTML = formatRecommendation(rec);
           row.querySelector('.movement').textContent = formatMovement(rec);
           row.querySelector('.confidence').textContent = rec.confidence || '—';
+          row.querySelector('.logged-sum').textContent = formatLoggedSummary(rec);
           const rowElement = row.querySelector('tr');
           const multiBookFlag = rec.details?.multi_book_confirmed;
           if ((rec.event?.id && eventCounts[rec.event.id] > 1) || multiBookFlag) {
@@ -326,14 +335,21 @@
         }
         const home = rec.event.home_team || 'Home';
         const away = rec.event.away_team || 'Away';
-        const time = rec.event.commence_time ? new Date(rec.event.commence_time).toLocaleString() : '';
+        const time = rec.event.commence_time
+          ? formatDatetime(rec.event.commence_time)
+          : '';
         return `<strong>${away}</strong> @ <strong>${home}</strong><br/><span class="muted">${time}</span>`;
       }
 
       function formatDate(value) {
         if (!value) return '—';
+        return formatDatetime(value);
+      }
+
+      function formatDatetime(value) {
         const date = new Date(value);
-        return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+        if (Number.isNaN(date.getTime())) return value;
+        return date.toLocaleString('en-US', { timeZone: displayTimezone });
       }
 
       function capitalize(word) {
@@ -390,7 +406,13 @@
         button.className = 'log-bet-btn';
 
         if (rec.bet_logged) {
-          button.textContent = 'Logged';
+          const units = getLoggedUnits(rec);
+          const amount = getLoggedAmount(rec);
+          if (units) {
+            button.textContent = `Logged ${units.toFixed(2)}U (${formatCurrency(amount)})`;
+          } else {
+            button.textContent = 'Logged';
+          }
           button.disabled = true;
         } else {
           button.textContent = 'Log Bet';
@@ -402,7 +424,7 @@
 
       async function logBet(rec, button) {
         try {
-          const defaultStake = rec.bets?.[0]?.stake || 1;
+          const defaultStake = rec.bets?.[0]?.stake_units || 1;
           const stakeInput = prompt('Stake (units)', defaultStake);
           if (stakeInput === null) return;
 
@@ -430,11 +452,25 @@
             throw new Error(error.error || `Request failed (${response.status})`);
           }
 
+          const result = await response.json();
+
+          const unitsLogged = parseFloat(result.stake_units) || parseFloat(stakeInput) || 0;
+          const amountLogged = parseFloat(result.stake_amount) || unitsLogged * unitValue;
+
           rec.bet_logged = true;
+          rec.bet_count = (rec.bet_count || 0) + 1;
           rec.bets = rec.bets || [];
-          rec.bets.push({ stake: parseFloat(stakeInput), price: priceInput, notes: notesInput });
-          button.textContent = 'Logged';
-          statusMessage.textContent = `Logged bet on ${rec.team || rec.bet_side} (${rec.sportsbook_name || rec.sportsbook}).`;
+          rec.bets.push({
+            stake_units: unitsLogged,
+            stake_amount: amountLogged,
+            price: parseFloat(priceInput),
+            notes: notesInput,
+          });
+
+          button.textContent = `Logged ${unitsLogged.toFixed(2)}U (${formatCurrency(amountLogged)})`;
+          button.disabled = true;
+          statusMessage.textContent = `Logged ${unitsLogged.toFixed(2)}U (${formatCurrency(amountLogged)}) on ${rec.team || rec.bet_side} (${rec.sportsbook_name || rec.sportsbook}).`;
+          setTimeout(() => updateStatusSummary(state.data), 2000);
         } catch (err) {
           console.error(err);
           alert(err.message || 'Failed to log bet.');
@@ -447,10 +483,40 @@
         const total = state.data.length;
         const filteredCount = filteredRecommendations.length;
         const loggedCount = filteredRecommendations.filter((rec) => rec.bet_logged).length;
+        const totalUnits = filteredRecommendations.reduce((sum, rec) => sum + getLoggedUnits(rec), 0);
+        const totalDollars = filteredRecommendations.reduce(
+          (sum, rec) => sum + getLoggedAmount(rec),
+          0
+        );
         const refreshed = state.lastRefreshed
           ? state.lastRefreshed.toLocaleTimeString()
           : '—';
-        statusMessage.textContent = `Showing ${filteredCount} of ${total} recommendations · Logged bets: ${loggedCount} · Last refreshed ${refreshed}`;
+        statusMessage.textContent = `Showing ${filteredCount} of ${total} recommendations · Logged bets: ${loggedCount} (${totalUnits.toFixed(2)}U / ${formatCurrency(totalDollars)}) · Last refreshed ${refreshed}`;
+      }
+
+      function getLoggedUnits(rec) {
+        if (!rec.bet_logged || !rec.bets) return 0;
+        return rec.bets.reduce((sum, bet) => sum + (parseFloat(bet.stake_units) || 0), 0);
+      }
+
+      function getLoggedAmount(rec) {
+        if (!rec.bet_logged || !rec.bets) return 0;
+        const total = rec.bets.reduce((sum, bet) => sum + (parseFloat(bet.stake_amount) || 0), 0);
+        if (total) return total;
+        // fallback if stake_amount missing
+        return getLoggedUnits(rec) * unitValue;
+      }
+
+      function formatCurrency(amount) {
+        const value = Number(amount) || 0;
+        return `$${value.toFixed(2)}`;
+      }
+
+      function formatLoggedSummary(rec) {
+        const units = getLoggedUnits(rec);
+        const amount = getLoggedAmount(rec);
+        if (!units) return '0.00U ($0.00)';
+        return `${units.toFixed(2)}U (${formatCurrency(amount)})`;
       }
 
       async function runIngestion() {
