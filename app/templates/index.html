@@ -406,13 +406,7 @@
         button.className = 'log-bet-btn';
 
         if (rec.bet_logged) {
-          const units = getLoggedUnits(rec);
-          const amount = getLoggedAmount(rec);
-          if (units) {
-            button.textContent = `Logged ${units.toFixed(2)}U (${formatCurrency(amount)})`;
-          } else {
-            button.textContent = 'Logged';
-          }
+          button.textContent = 'Logged';
           button.disabled = true;
         } else {
           button.textContent = 'Log Bet';
@@ -467,7 +461,7 @@
             notes: notesInput,
           });
 
-          button.textContent = `Logged ${unitsLogged.toFixed(2)}U (${formatCurrency(amountLogged)})`;
+          button.textContent = 'Logged';
           button.disabled = true;
           statusMessage.textContent = `Logged ${unitsLogged.toFixed(2)}U (${formatCurrency(amountLogged)}) on ${rec.team || rec.bet_side} (${rec.sportsbook_name || rec.sportsbook}).`;
           setTimeout(() => updateStatusSummary(state.data), 2000);
