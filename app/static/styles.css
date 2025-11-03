@@ -208,6 +208,14 @@ tbody tr:hover {
   background-color: #f5f8ff;
 }
 
+.multi-book {
+  background-color: #fff9e6;
+}
+
+.multi-book:hover {
+  background-color: #fff2cc;
+}
+
 .muted {
   font-size: 0.85rem;
   color: #6c7899;

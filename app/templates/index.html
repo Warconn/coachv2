@@ -66,7 +66,9 @@
         </div>
         <ul>
           <li>Consider wagering when the reverse-move signal aligns with your handicap and you can still grab the tightened price before the market fully adjusts.</li>
+          <li>Rows highlighted in gold mean multiple sportsbooks flagged the same reverse move – treat these as higher-confidence opportunities.</li>
           <li>Check multiple books — sharper books (e.g., Pinnacle, Circa) moving with the alert add confidence even if they are not listed here yet.</li>
+          <li>The recommendation always points to the underdog side whose odds tightened (home or away). Reverse moves are significant because money is hitting the dog despite the price dropping.</li>
           <li>Pass on alerts when key injuries, weather, or rest disadvantages contradict the move. Use the matchup tooltip for start times.</li>
           <li>High confidence indicates at least 2× the configured cent move; Medium is ≥1.5×. Use confidence to filter to your desired risk level.</li>
         </ul>
@@ -277,6 +279,13 @@
           return;
         }
 
+        const eventCounts = recommendations.reduce((acc, rec) => {
+          const key = rec.event?.id;
+          if (!key) return acc;
+          acc[key] = (acc[key] || 0) + 1;
+          return acc;
+        }, {});
+
         for (const rec of recommendations) {
           const row = rowTemplate.content.cloneNode(true);
           row.querySelector('.triggered').textContent = formatDate(rec.triggered_at);
@@ -286,6 +295,11 @@
           row.querySelector('.side').innerHTML = formatRecommendation(rec);
           row.querySelector('.movement').textContent = formatMovement(rec);
           row.querySelector('.confidence').textContent = rec.confidence || '—';
+          const rowElement = row.querySelector('tr');
+          if (rec.event?.id && eventCounts[rec.event.id] > 1) {
+            rowElement.classList.add('multi-book');
+            rowElement.title = 'Same game flagged by multiple books';
+          }
           tableBody.appendChild(row);
         }
       }

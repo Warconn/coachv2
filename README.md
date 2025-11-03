@@ -29,7 +29,8 @@ Update `requirements.txt` so future installs use `psycopg[binary]`, and set `DAT
 
 ### Dashboard tips
 - Use the League, Sportsbook, and Confidence dropdowns to narrow the table to the alerts you care about most.
-- Click any sortable column header (Triggered, Signal, Confidence, etc.) to toggle ascending/descending order.
+- Click any sortable column header (Triggered, Odds Move, Confidence, etc.) to toggle ascending/descending order.
+- Rows highlighted in gold indicate that multiple sportsbooks showed the same reverse move for that matchup.
 - Hover the info icon in the "When should I bet?" panel for reminders on how to interpret the reverse-move signal and what factors to double-check before betting.
 - The **Run Ingestion** button triggers the same ingestion worker immediately, giving you up-to-the-minute lines outside the scheduled cadence.
 
