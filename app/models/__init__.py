@@ -58,6 +58,9 @@ class Event(BaseModel):
     away_team = Column(String(128), nullable=False)
     league = Column(String(128), nullable=True)
     raw = Column(JSON, nullable=True)
+    home_score = Column(Integer, nullable=True)
+    away_score = Column(Integer, nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
 
     odds_snapshots = relationship("OddsSnapshot", back_populates="event")
     recommendations = relationship("Recommendation", back_populates="event")
@@ -110,6 +113,14 @@ class RecommendationStatus(PyEnum):
     DISMISSED = "dismissed"
 
 
+class BetResult(PyEnum):
+    PENDING = "pending"
+    WON = "won"
+    LOST = "lost"
+    PUSH = "push"
+    VOID = "void"
+
+
 class Recommendation(BaseModel):
     __tablename__ = "recommendations"
 
@@ -126,20 +137,14 @@ class Recommendation(BaseModel):
     status = Column(Enum(RecommendationStatus), default=RecommendationStatus.PENDING, nullable=False)
     notes = Column(String(512), nullable=True)
     details = Column(JSON, nullable=True)
+    closing_price = Column(Integer, nullable=True)
+    resolved_result = Column(Enum(BetResult), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
 
     event = relationship("Event", back_populates="recommendations")
     sportsbook = relationship("Sportsbook", back_populates="recommendations")
     snapshot = relationship("OddsSnapshot")
     bets = relationship("Bet", back_populates="recommendation")
-
-
-class BetResult(PyEnum):
-    PENDING = "pending"
-    WON = "won"
-    LOST = "lost"
-    PUSH = "push"
-    VOID = "void"
-
 
 class Bet(BaseModel):
     __tablename__ = "bets"

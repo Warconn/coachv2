@@ -55,6 +55,15 @@
     </header>
 
     <main>
+      <div class="view-switch" role="tablist" aria-label="Recommendation views">
+        <button type="button" class="tab-btn active" data-view="live" role="tab" aria-selected="true">
+          Live Recommendations
+        </button>
+        <button type="button" class="tab-btn" data-view="history" role="tab" aria-selected="false">
+          History
+        </button>
+      </div>
+
       <section class="status-bar" id="status-bar">
         <span id="status-message">Loading recommendations…</span>
       </section>
@@ -87,6 +96,7 @@
               <th scope="col" data-sort="bet_side">Recommendation <span class="sort-indicator"></span></th>
               <th scope="col" data-sort="movement">Odds Move <span class="sort-indicator"></span></th>
               <th scope="col" data-sort="confidence">Confidence <span class="sort-indicator"></span></th>
+              <th scope="col" data-sort="outcome">Outcome <span class="sort-indicator"></span></th>
               <th scope="col">Logged Units</th>
               <th scope="col">Action</th>
             </tr>
@@ -105,6 +115,7 @@
         <td class="side"></td>
         <td class="movement"></td>
         <td class="confidence"></td>
+        <td class="outcome"></td>
         <td class="logged-sum"></td>
         <td class="bet-action"></td>
       </tr>
@@ -123,6 +134,10 @@
       const ingestBtn = document.getElementById('ingest-btn');
       const rowTemplate = document.getElementById('row-template');
       const headerCells = document.querySelectorAll('th[data-sort]');
+      const tabButtons = document.querySelectorAll('.tab-btn');
+      tabButtons.forEach((button) => {
+        button.setAttribute('aria-selected', button.classList.contains('active'));
+      });
       let unitValue = parseFloat(document.body.dataset.unitValue || '1');
 
       const state = {
@@ -137,16 +152,19 @@
           direction: 'desc',
         },
         lastRefreshed: null,
+        view: 'live',
       };
 
       const confidenceOrder = { high: 3, medium: 2, low: 1 };
       const movementPriority = { reverse: 2, favorite: 1, unchanged: 0 };
 
-      async function fetchRecommendations(limit) {
+      async function fetchRecommendations() {
         statusMessage.textContent = 'Loading recommendations…';
         tableBody.innerHTML = '';
         try {
-          const response = await fetch(`${API_BASE}/recommendations?limit=${limit}`);
+          const limit = limitSelect.value;
+          const scope = state.view === 'history' ? 'history' : 'live';
+          const response = await fetch(`${API_BASE}/recommendations?scope=${scope}&limit=${limit}`);
           if (!response.ok) {
             throw new Error(`API error ${response.status}`);
           }
@@ -267,6 +285,10 @@
             return rec.movement ? movementPriority[rec.movement] || 0 : 0;
           case 'confidence':
             return rec.confidence ? confidenceOrder[rec.confidence] || 0 : 0;
+          case 'outcome':
+            if (!rec.outcome) return 0;
+            const outcomeOrder = { won: 3, push: 2, void: 1, lost: 0 };
+            return outcomeOrder[rec.outcome] ?? 0;
           default:
             return 0;
         }
@@ -284,6 +306,8 @@
           emptyRow.querySelector('.side').textContent = '—';
           emptyRow.querySelector('.movement').textContent = '—';
           emptyRow.querySelector('.confidence').textContent = '—';
+          emptyRow.querySelector('.outcome').textContent = '—';
+          emptyRow.querySelector('.logged-sum').textContent = '—';
           emptyRow.querySelector('.bet-action').textContent = '—';
           tableBody.appendChild(emptyRow);
           return;
@@ -305,14 +329,24 @@
           row.querySelector('.side').innerHTML = formatRecommendation(rec);
           row.querySelector('.movement').textContent = formatMovement(rec);
           row.querySelector('.confidence').textContent = rec.confidence || '—';
+          const outcomeCell = row.querySelector('.outcome');
+          outcomeCell.textContent = formatOutcome(rec);
+          outcomeCell.className = 'outcome';
+          if (rec.outcome) {
+            outcomeCell.classList.add(`outcome-${rec.outcome}`);
+          }
           row.querySelector('.logged-sum').textContent = formatLoggedSummary(rec);
           const rowElement = row.querySelector('tr');
+          rowElement.classList.remove('multi-book', 'result-won', 'result-lost', 'result-push', 'result-void');
           const multiBookFlag = rec.details?.multi_book_confirmed;
           if ((rec.event?.id && eventCounts[rec.event.id] > 1) || multiBookFlag) {
             rowElement.classList.add('multi-book');
             rowElement.title = 'Same game flagged by multiple books';
           }
-          attachBetHandler(rowElement, rec);
+          if (rec.outcome) {
+            rowElement.classList.add(`result-${rec.outcome}`);
+          }
+          renderActionCell(rowElement, rec);
           tableBody.appendChild(row);
         }
       }
@@ -338,7 +372,9 @@
         const time = rec.event.commence_time
           ? formatDatetime(rec.event.commence_time)
           : '';
-        return `<strong>${away}</strong> @ <strong>${home}</strong><br/><span class="muted">${time}</span>`;
+        const score = formatScore(rec);
+        const scoreLine = score ? `<br/><span class="muted">${score}</span>` : '';
+        return `<strong>${away}</strong> @ <strong>${home}</strong><br/><span class="muted">${time}</span>${scoreLine}`;
       }
 
       function formatDate(value) {
@@ -395,25 +431,60 @@
         return `${formatAmericanOdds(prev)} → ${formatAmericanOdds(curr)}`;
       }
 
-      function attachBetHandler(rowElement, rec) {
+      function formatOutcome(rec) {
+        if (rec.outcome) {
+          const label = capitalize(rec.outcome);
+          const score = formatScore(rec);
+          return score ? `${label} ${score}` : label;
+        }
+        return state.view === 'history' ? 'Pending' : '—';
+      }
+
+      function formatScore(rec) {
+        if (!rec.event) return '';
+        const { home_score: homeScore, away_score: awayScore } = rec.event;
+        if (homeScore === null || homeScore === undefined || awayScore === null || awayScore === undefined) {
+          return '';
+        }
+        const homeTeam = rec.event.home_team || 'Home';
+        const awayTeam = rec.event.away_team || 'Away';
+        return `(Final ${awayTeam} ${awayScore} - ${homeTeam} ${homeScore})`;
+      }
+
+      function renderActionCell(rowElement, rec) {
         const cell = rowElement.querySelector('.bet-action');
         if (!cell) return;
 
         cell.innerHTML = '';
 
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'log-bet-btn';
+        const logButton = document.createElement('button');
+        logButton.type = 'button';
+        logButton.className = 'log-bet-btn';
 
         if (rec.bet_logged) {
-          button.textContent = 'Logged';
-          button.disabled = true;
+          logButton.textContent = 'Logged';
+          logButton.disabled = true;
         } else {
-          button.textContent = 'Log Bet';
-          button.addEventListener('click', () => logBet(rec, button));
+          logButton.textContent = 'Log Bet';
+          logButton.addEventListener('click', () => logBet(rec, logButton));
         }
 
-        cell.appendChild(button);
+        cell.appendChild(logButton);
+
+        if (state.view === 'history') {
+          if (!rec.outcome) {
+            const resolveBtn = document.createElement('button');
+            resolveBtn.type = 'button';
+            resolveBtn.className = 'resolve-btn';
+            resolveBtn.textContent = 'Set Outcome';
+            resolveBtn.addEventListener('click', () => resolveRecommendation(rec));
+            cell.appendChild(resolveBtn);
+          }
+        }
+
+        if (!cell.children.length) {
+          cell.textContent = '—';
+        }
       }
 
       async function logBet(rec, button) {
@@ -464,12 +535,69 @@
           button.textContent = 'Logged';
           button.disabled = true;
           statusMessage.textContent = `Logged ${unitsLogged.toFixed(2)}U (${formatCurrency(amountLogged)}) on ${rec.team || rec.bet_side} (${rec.sportsbook_name || rec.sportsbook}).`;
-          setTimeout(() => updateStatusSummary(state.data), 2000);
+          applyFiltersAndRender();
         } catch (err) {
           console.error(err);
           alert(err.message || 'Failed to log bet.');
           button.disabled = false;
           button.textContent = 'Log Bet';
+        }
+      }
+
+      async function resolveRecommendation(rec) {
+        try {
+          const outcomeInput = prompt('Outcome (won/lost/push/void)', rec.outcome || 'won');
+          if (outcomeInput === null) return;
+
+          const normalized = outcomeInput.trim().toLowerCase();
+          const allowed = ['won', 'lost', 'push', 'void'];
+          if (!allowed.includes(normalized)) {
+            alert(`Outcome must be one of: ${allowed.join(', ')}`);
+            return;
+          }
+
+          const homeScoreInput = prompt('Home score (optional)', rec.event?.home_score ?? '');
+          if (homeScoreInput === null) return;
+          const awayScoreInput = prompt('Away score (optional)', rec.event?.away_score ?? '');
+          if (awayScoreInput === null) return;
+          const closingPriceInput = prompt('Closing price (optional)', rec.closing_price ?? rec.details?.current_price ?? '');
+          if (closingPriceInput === null) return;
+
+          const response = await fetch(`${API_BASE}/recommendations/${rec.id}/resolve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              outcome: normalized,
+              home_score: homeScoreInput || null,
+              away_score: awayScoreInput || null,
+              closing_price: closingPriceInput || null,
+            }),
+          });
+
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.error || `Request failed (${response.status})`);
+          }
+
+          const result = await response.json();
+          rec.outcome = result.outcome;
+          rec.resolved_at = new Date().toISOString();
+          if (!rec.event) rec.event = {};
+          if (homeScoreInput) {
+            rec.event.home_score = Number(homeScoreInput);
+          }
+          if (awayScoreInput) {
+            rec.event.away_score = Number(awayScoreInput);
+          }
+          if (closingPriceInput) {
+            rec.closing_price = Number(closingPriceInput);
+          }
+
+          applyFiltersAndRender();
+          statusMessage.textContent = `Marked ${rec.team || rec.bet_side} as ${result.outcome}.`;
+        } catch (err) {
+          console.error(err);
+          alert(err.message || 'Failed to resolve recommendation.');
         }
       }
 
@@ -485,7 +613,8 @@
         const refreshed = state.lastRefreshed
           ? state.lastRefreshed.toLocaleTimeString()
           : '—';
-        statusMessage.textContent = `Showing ${filteredCount} of ${total} recommendations · Logged bets: ${loggedCount} (${totalUnits.toFixed(2)}U / ${formatCurrency(totalDollars)}) · Last refreshed ${refreshed}`;
+        const viewLabel = state.view === 'history' ? 'History' : 'Live';
+        statusMessage.textContent = `[${viewLabel}] Showing ${filteredCount} of ${total} recommendations · Logged bets: ${loggedCount} (${totalUnits.toFixed(2)}U / ${formatCurrency(totalDollars)}) · Last refreshed ${refreshed}`;
       }
 
       function getLoggedUnits(rec) {
@@ -521,7 +650,7 @@
           if (!response.ok) {
             throw new Error(`Failed to trigger ingestion (${response.status})`);
           }
-          await fetchRecommendations(limitSelect.value);
+          await fetchRecommendations();
         } catch (err) {
           console.error(err);
           statusMessage.textContent = 'Ingestion failed. Check logs and retry.';
@@ -531,9 +660,9 @@
         }
       }
 
-      refreshBtn.addEventListener('click', () => fetchRecommendations(limitSelect.value));
+      refreshBtn.addEventListener('click', () => fetchRecommendations());
       ingestBtn.addEventListener('click', runIngestion);
-      limitSelect.addEventListener('change', () => fetchRecommendations(limitSelect.value));
+      limitSelect.addEventListener('change', () => fetchRecommendations());
       leagueSelect.addEventListener('change', (event) => {
         state.filters.league = event.target.value;
         applyFiltersAndRender();
@@ -561,7 +690,23 @@
         });
       });
 
-      fetchRecommendations(limitSelect.value);
+      tabButtons.forEach((button) => {
+        button.addEventListener('click', () => selectView(button.dataset.view));
+      });
+
+      function selectView(view) {
+        if (state.view === view) return;
+        state.view = view;
+        tabButtons.forEach((btn) => {
+          const isActive = btn.dataset.view === view;
+          btn.classList.toggle('active', isActive);
+          btn.setAttribute('aria-selected', isActive);
+        });
+        state.sort = { key: 'triggered_at', direction: 'desc' };
+        fetchRecommendations();
+      }
+
+      fetchRecommendations();
     </script>
   </body>
 </html>

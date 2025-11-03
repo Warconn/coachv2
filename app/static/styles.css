@@ -84,6 +84,63 @@ button:disabled {
   background-color: #d6e4fb;
 }
 
+.resolve-btn {
+  margin-left: 0.5rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid #d7dfe9;
+  background-color: #ffffff;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.resolve-btn:hover {
+  background-color: #f3f6fc;
+}
+
+.outcome-tag {
+  margin-left: 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.outcome-won {
+  color: #1d8348;
+}
+
+.outcome-lost {
+  color: #c0392b;
+}
+
+.outcome-push {
+  color: #1f618d;
+}
+
+.outcome-void {
+  color: #7f8c8d;
+}
+
+.outcome.outcome-won {
+  color: #1d8348;
+  font-weight: 600;
+}
+
+.outcome.outcome-lost {
+  color: #c0392b;
+  font-weight: 600;
+}
+
+.outcome.outcome-push {
+  color: #1f618d;
+  font-weight: 600;
+}
+
+.outcome.outcome-void {
+  color: #7f8c8d;
+  font-weight: 600;
+}
+
 main {
   padding: 1.5rem 2rem 2.5rem;
 }
@@ -255,4 +312,30 @@ tbody tr:hover {
   table {
     min-width: 100%;
   }
+}
+.view-switch {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1rem 0 1.2rem;
+}
+
+.tab-btn {
+  padding: 0.5rem 1rem;
+  border-radius: 999px;
+  border: 1px solid #c8d1e5;
+  background-color: #f0f4ff;
+  color: #14213d;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.tab-btn.active {
+  background-color: #14213d;
+  color: #fff;
+  border-color: #14213d;
+}
+
+.tab-btn:focus {
+  outline: 2px solid #fca311;
+  outline-offset: 2px;
 }

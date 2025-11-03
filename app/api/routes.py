@@ -3,10 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from decimal import Decimal
+
+import sqlalchemy as sa
 from flask import current_app, jsonify, request
 
 from app import db
-from app.models import Bet, BetResult, Event, Recommendation
+from app.models import Bet, BetResult, Event, Recommendation, RecommendationStatus
 from app.worker.tasks import run_ingest_cycle
 
 from . import api_bp
@@ -34,19 +36,34 @@ def recommendations_index():
         limit = int(request.args.get("limit", 50))
     except (TypeError, ValueError):
         limit = 50
-    limit = max(1, min(limit, 200))
+    limit = max(1, min(limit, 500))
+
+    scope = request.args.get("scope", "live").lower()
 
     now = datetime.now(timezone.utc)
 
-    recommendations = (
-        Recommendation.query.join(Event)
-        .filter(
-            (Event.commence_time.is_(None)) | (Event.commence_time >= now)
+    query = Recommendation.query.join(Event)
+
+    if scope == "history":
+        query = query.filter(
+            sa.or_(
+                Recommendation.resolved_at.isnot(None),
+                sa.and_(
+                    Event.commence_time.isnot(None),
+                    Event.commence_time < now,
+                ),
+            )
         )
-        .order_by(Recommendation.triggered_at.desc())
-        .limit(limit)
-        .all()
-    )
+        query = query.order_by(Recommendation.triggered_at.desc())
+    else:
+        query = query.filter(
+            sa.and_(
+                Recommendation.resolved_at.is_(None),
+                sa.or_(Event.commence_time.is_(None), Event.commence_time >= now),
+            )
+        ).order_by(Recommendation.triggered_at.desc())
+
+    recommendations = query.limit(limit).all()
 
     payload = []
     unit_value = Decimal(str(current_app.config.get("UNIT_VALUE", 1)))
@@ -90,6 +107,9 @@ def recommendations_index():
                     "home_team": event.home_team if event else None,
                     "away_team": event.away_team if event else None,
                     "league": event.league if event else None,
+                    "home_score": event.home_score if event else None,
+                    "away_score": event.away_score if event else None,
+                    "resolved_at": event.resolved_at.isoformat() if event and event.resolved_at else None,
                 },
                 "bet_side": rec.bet_side,
                 "team": team,
@@ -101,6 +121,9 @@ def recommendations_index():
                 "bet_count": len(bets_payload),
                 "bets": bets_payload,
                 "unit_value": unit_value_float,
+                "outcome": rec.resolved_result.value if rec.resolved_result else None,
+                "resolved_at": rec.resolved_at.isoformat() if rec.resolved_at else None,
+                "closing_price": rec.closing_price,
             }
         )
 
@@ -169,3 +192,62 @@ def log_bet(rec_id: int):
             "unit_value": float(unit_value),
         }
     )
+
+
+@api_bp.post("/recommendations/<int:rec_id>/resolve")
+def resolve_recommendation(rec_id: int):
+    data = request.get_json() or {}
+
+    recommendation = Recommendation.query.get_or_404(rec_id)
+    event = recommendation.event
+
+    outcome_raw = data.get("outcome")
+    if not outcome_raw:
+        return jsonify({"error": "Outcome is required"}), 400
+
+    try:
+        outcome = BetResult(outcome_raw.lower())
+    except ValueError:
+        valid = ", ".join([result.value for result in BetResult])
+        return jsonify({"error": f"Outcome must be one of: {valid}"}), 400
+
+    closing_price = data.get("closing_price")
+    try:
+        closing_price_val = int(closing_price) if closing_price is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid closing price"}), 400
+
+    home_score = data.get("home_score")
+    away_score = data.get("away_score")
+
+    try:
+        home_score_val = int(home_score) if home_score is not None else None
+        away_score_val = int(away_score) if away_score is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "Scores must be integers"}), 400
+
+    resolved_at = datetime.now(timezone.utc)
+
+    recommendation.resolved_result = outcome
+    recommendation.resolved_at = resolved_at
+    recommendation.closing_price = closing_price_val
+    if outcome != BetResult.PENDING:
+        recommendation.status = RecommendationStatus.SETTLED
+
+    if event:
+        event.home_score = home_score_val
+        event.away_score = away_score_val
+        event.resolved_at = resolved_at
+
+    for bet in recommendation.bets:
+        bet.result = outcome
+        if bet.settled_at is None:
+            bet.settled_at = resolved_at
+
+    db.session.commit()
+
+    current_app.logger.info(
+        "Resolved recommendation %s as %s", rec_id, outcome.value
+    )
+
+    return jsonify({"status": "resolved", "outcome": outcome.value})
