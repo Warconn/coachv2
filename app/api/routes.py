@@ -311,7 +311,7 @@ def resolve_recommendation(rec_id: int):
 
 
 @api_bp.post("/recommendations/bulk_resolve")
-async def bulk_resolve_recommendations():
+def bulk_resolve_recommendations():
     payload = request.get_json() or {}
     items = payload.get("items", [])
     if not isinstance(items, list) or not items:
@@ -335,9 +335,19 @@ async def bulk_resolve_recommendations():
             event = Event.query.get(event_id)
             
         # Skip items where the game hasn't started yet
-        if event and event.commence_time and event.commence_time > now:
-            rejected += 1
-            continue
+        if event and event.commence_time:
+            # normalize naive datetimes from DB to UTC for comparison
+            evt_ct = event.commence_time
+            try:
+                if evt_ct.tzinfo is None:
+                    from datetime import timezone as _tz
+
+                    evt_ct = evt_ct.replace(tzinfo=_tz.utc)
+            except Exception:
+                pass
+            if evt_ct > now:
+                rejected += 1
+                continue
             
         filtered_items = filtered_items + [item]
     
